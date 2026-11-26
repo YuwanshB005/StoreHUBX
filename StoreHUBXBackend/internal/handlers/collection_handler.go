@@ -49,7 +49,7 @@ func CreateCollection(c *fiber.Ctx) error {
 		UpdatedAt:    time.Now(),
 	}
 
-	col := db.Client.Database("storehub").Collection("collections")
+	col := db.DB().Collection("collections")
 	res, err := col.InsertOne(ctx, collection)
 	if err != nil {
 		return utils.Error(c, 500, "failed to create collection")
@@ -78,7 +78,7 @@ func ListUserCollections(c *fiber.Ctx) error {
 		filter["visibility"] = bson.M{"$ne": "private"}
 	}
 
-	col := db.Client.Database("storehub").Collection("collections")
+	col := db.DB().Collection("collections")
 	opts := options.Find().SetSort(bson.D{{Key: "createdAt", Value: -1}})
 	cursor, err := col.Find(ctx, filter, opts)
 	if err != nil {
@@ -115,7 +115,7 @@ func ListPublicCollections(c *fiber.Ctx) error {
 	}
 	skip := (page - 1) * limit
 
-	col := db.Client.Database("storehub").Collection("collections")
+	col := db.DB().Collection("collections")
 	filter := bson.M{"visibility": "public"}
 
 	opts := options.Find().
@@ -197,7 +197,7 @@ func UpdateCollection(c *fiber.Ctx) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	col := db.Client.Database("storehub").Collection("collections")
+	col := db.DB().Collection("collections")
 	opts := options.FindOneAndUpdate().SetReturnDocument(options.After)
 	var updated models.Collection
 	if err := col.FindOneAndUpdate(ctx,
@@ -229,7 +229,7 @@ func DeleteCollection(c *fiber.Ctx) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	col := db.Client.Database("storehub").Collection("collections")
+	col := db.DB().Collection("collections")
 	res, err := col.DeleteOne(ctx, bson.M{"_id": collID, "ownerId": uid})
 	if err != nil {
 		return utils.Error(c, 500, "failed to delete collection")
@@ -257,7 +257,7 @@ func GetCollection(c *fiber.Ctx) error {
 	defer cancel()
 
 	var collection models.Collection
-	col := db.Client.Database("storehub").Collection("collections")
+	col := db.DB().Collection("collections")
 	if err := col.FindOne(ctx, bson.M{"_id": collID}).Decode(&collection); err != nil {
 		return utils.Error(c, 404, "collection not found")
 	}
@@ -284,7 +284,7 @@ func GetCollection(c *fiber.Ctx) error {
 			}
 		}
 
-		compCol := db.Client.Database("storehub").Collection("components")
+		compCol := db.DB().Collection("components")
 		cursor, err := compCol.Find(ctx, filter)
 		if err != nil {
 			return utils.Error(c, 500, "database error")
@@ -320,7 +320,7 @@ func AddComponentToCollection(c *fiber.Ctx) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	col := db.Client.Database("storehub").Collection("collections")
+	col := db.DB().Collection("collections")
 	opts := options.FindOneAndUpdate().SetReturnDocument(options.After)
 	var updated models.Collection
 	err = col.FindOneAndUpdate(ctx,
@@ -359,7 +359,7 @@ func RemoveComponentFromCollection(c *fiber.Ctx) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	col := db.Client.Database("storehub").Collection("collections")
+	col := db.DB().Collection("collections")
 	opts := options.FindOneAndUpdate().SetReturnDocument(options.After)
 	var updated models.Collection
 	err = col.FindOneAndUpdate(ctx,

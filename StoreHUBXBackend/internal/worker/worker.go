@@ -48,7 +48,7 @@ func NewProcessor(uploader storage.Uploader) *Processor {
 }
 
 func (p *Processor) logPush(ctx context.Context, id primitive.ObjectID, msg string) {
-	_, _ = db.Client.Database(os.Getenv("MONGO_DB")).
+	_, _ = db.DB().
 		Collection("build_jobs").
 		UpdateByID(ctx, id, bson.M{"$set": bson.M{"updatedAt": time.Now()}, "$push": bson.M{"logs": msg}})
 }
@@ -58,7 +58,7 @@ func (p *Processor) setStatus(ctx context.Context, id primitive.ObjectID, status
 	for k, v := range extra {
 		set[k] = v
 	}
-	_, _ = db.Client.Database(os.Getenv("MONGO_DB")).
+	_, _ = db.DB().
 		Collection("build_jobs").
 		UpdateByID(ctx, id, bson.M{"$set": set})
 }
@@ -73,7 +73,7 @@ func (p *Processor) claimQueued(ctx context.Context) (*models.BuildJob, error) {
 			{"nextAttemptAt": bson.M{"$lte": now}},
 		},
 	}
-	err := db.Client.Database(os.Getenv("MONGO_DB")).
+	err := db.DB().
 		Collection("build_jobs").
 		FindOneAndUpdate(ctx,
 			filter,
@@ -116,7 +116,7 @@ func (p *Processor) heartbeatLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-heartbeatTicker.C:
-			count, err := db.Client.Database(os.Getenv("MONGO_DB")).
+			count, err := db.DB().
 				Collection("build_jobs").
 				CountDocuments(ctx, bson.M{"status": models.BuildQueued})
 			if err == nil {
@@ -212,7 +212,7 @@ func (p *Processor) claimSpecific(ctx context.Context, id primitive.ObjectID) (*
 			{"nextAttemptAt": bson.M{"$lte": now}},
 		},
 	}
-	err := db.Client.Database(os.Getenv("MONGO_DB")).
+	err := db.DB().
 		Collection("build_jobs").
 		FindOneAndUpdate(ctx,
 			filter,

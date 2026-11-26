@@ -1,4 +1,4 @@
-.PHONY: dev backend frontend infra stop install check check-backend check-frontend
+.PHONY: dev backend frontend infra stop install check check-backend check-frontend test
 
 # One-command local dev: preflight checks + infra + hot-reloading API +
 # hot-reloading worker + frontend. Ctrl+C stops everything.
@@ -34,3 +34,8 @@ check-backend:
 
 check-frontend:
 	@bash scripts/check-env.sh frontend
+
+# Backend unit + integration tests. Needs the Docker infra (`make infra`);
+# uses its own database (storehub_test) and Redis DB 15, never dev data.
+test: infra
+	@cd StoreHUBXBackend && go test -race -p 1 -count=1 ./...

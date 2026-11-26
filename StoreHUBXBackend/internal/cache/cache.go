@@ -4,6 +4,7 @@ import (
 	"context"
 	"log"
 	"os"
+	"strconv"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -22,7 +23,10 @@ func Init() {
 		addr = "localhost:6379"
 	}
 
-	rdb := redis.NewClient(&redis.Options{Addr: addr})
+	// REDIS_DB selects a logical database (default 0) so tests can use an
+	// isolated one and flush it freely.
+	dbIndex, _ := strconv.Atoi(os.Getenv("REDIS_DB"))
+	rdb := redis.NewClient(&redis.Options{Addr: addr, DB: dbIndex})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

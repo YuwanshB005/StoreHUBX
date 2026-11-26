@@ -55,7 +55,7 @@ func main() {
 
 	// Build the set of live slugs first. If this read is wrong, everything
 	// downstream is wrong in the most destructive possible direction.
-	col := db.Client.Database("storehub").Collection("components")
+	col := db.DB().Collection("components")
 	cursor, err := col.Find(ctx, bson.M{}, nil)
 	if err != nil {
 		log.Fatal("find components: ", err)

@@ -6,6 +6,7 @@ import (
 	"github.com/gofiber/fiber/v2"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/yuwanshb005/storehubx/internal/config"
+	"github.com/yuwanshb005/storehubx/internal/utils"
 )
 
 // parseBearerClaims extracts user_id/email from a "Bearer <jwt>" Authorization
@@ -36,7 +37,7 @@ func parseBearerClaims(authHeader string) (userID, email string, ok bool) {
 func JWTProtected(c *fiber.Ctx) error {
 	userID, email, ok := parseBearerClaims(c.Get("Authorization"))
 	if !ok {
-		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "missing or invalid token"})
+		return utils.Error(c, fiber.StatusUnauthorized, "missing or invalid token")
 	}
 	c.Locals("user_id", userID)
 	c.Locals("email", email)

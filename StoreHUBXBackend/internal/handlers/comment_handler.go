@@ -70,7 +70,7 @@ func GetComments(c *fiber.Ctx) error {
 	}
 	skip := (page - 1) * limit
 
-	interactionCol := db.Client.Database("storehub").Collection("interactions")
+	interactionCol := db.DB().Collection("interactions")
 	filter := bson.M{"componentId": comp.ID, "type": models.InteractionComment}
 	opts := options.Find().
 		SetSkip(int64(skip)).
@@ -133,7 +133,7 @@ func AddComment(c *fiber.Ctx) error {
 		}
 	}
 
-	userCol := db.Client.Database("storehub").Collection("users")
+	userCol := db.DB().Collection("users")
 	var author models.User
 	if err := userCol.FindOne(ctx, bson.M{"providerId": uid}).Decode(&author); err != nil {
 		return utils.Error(c, 404, "user not found")
@@ -150,7 +150,7 @@ func AddComment(c *fiber.Ctx) error {
 		CreatedAt:      time.Now(),
 	}
 
-	interactionCol := db.Client.Database("storehub").Collection("interactions")
+	interactionCol := db.DB().Collection("interactions")
 	res, err := interactionCol.InsertOne(ctx, newComment)
 	if err != nil {
 		return utils.Error(c, 500, "failed to posting comment")
@@ -184,7 +184,7 @@ func DeleteComment(c *fiber.Ctx) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	interactionCol := db.Client.Database("storehub").Collection("interactions")
+	interactionCol := db.DB().Collection("interactions")
 
 	// Ensure the user trying to delete is the actual author
 	res, err := interactionCol.DeleteOne(ctx, bson.M{"_id": objID, "userId": uid, "type": models.InteractionComment})

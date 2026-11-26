@@ -34,7 +34,7 @@ func GetOwnerAnalytics(c *fiber.Ctx) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	compCol := db.Client.Database("storehub").Collection("components")
+	compCol := db.DB().Collection("components")
 	cursor, err := compCol.Find(ctx, bson.M{"ownerId": uid})
 	if err != nil {
 		return utils.Error(c, 500, "failed to fetch components")
@@ -46,7 +46,7 @@ func GetOwnerAnalytics(c *fiber.Ctx) error {
 		return utils.Error(c, 500, "failed to decode components")
 	}
 
-	interactionCol := db.Client.Database("storehub").Collection("interactions")
+	interactionCol := db.DB().Collection("interactions")
 
 	componentIDs := make([]primitive.ObjectID, 0, len(components))
 	for _, comp := range components {

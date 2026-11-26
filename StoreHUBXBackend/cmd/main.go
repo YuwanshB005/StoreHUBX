@@ -10,43 +10,24 @@ package main
 import (
 	"log"
 
-	"github.com/gofiber/fiber/v2"
-	"github.com/gofiber/fiber/v2/middleware/recover"
-	"github.com/gofiber/fiber/v2/middleware/cors"
+	"github.com/joho/godotenv"
 	"github.com/yuwanshb005/storehubx/internal/cache"
 	"github.com/yuwanshb005/storehubx/internal/config"
 	"github.com/yuwanshb005/storehubx/internal/db"
-	"github.com/yuwanshb005/storehubx/internal/middleware"
-	"github.com/yuwanshb005/storehubx/internal/routes"
-	"github.com/joho/godotenv"
-	_ "github.com/yuwanshb005/storehubx/docs" // Swagger generated docs
-	"github.com/gofiber/swagger"
+	"github.com/yuwanshb005/storehubx/internal/server"
 )
 
 func main() {
 	_ = godotenv.Load()
 	config.LoadConfig()
 	db.Init(config.AppConfig.MongoURI)
-	db.EnsureIndexes(db.Client)
+	if err := db.EnsureIndexes(db.Client); err != nil {
+		log.Fatal("ensure indexes: ", err)
+	}
 	defer db.Disconnect()
 	cache.Init()
 
-	app := fiber.New()
-
-	// 🔹 Global middlewares
-	app.Use(cors.New(cors.Config{
-		AllowOrigins: "*",
-		AllowHeaders: "Origin, Content-Type, Authorization",
-	}))
-	app.Use(recover.New())
-	app.Use(middleware.Logger())
-	app.Use(middleware.RateLimiter())
-	app.Get("/docs/*", swagger.HandlerDefault) // Visit http://localhost:8080/docs/index.html
-
-
-	// 🔹 Register routes
-	routes.RegisterRoutes(app)
-
-	log.Println("🚀 StoreHUB running on port", config.AppConfig.Port)
+	app := server.New()
+	log.Println("StoreHUB running on port", config.AppConfig.Port)
 	log.Fatal(app.Listen(":" + config.AppConfig.Port))
 }

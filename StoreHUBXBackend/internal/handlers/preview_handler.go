@@ -49,7 +49,7 @@ func RedirectPreview(c *fiber.Ctx) error {
 		}
 	}
 
-	jobCol := db.Client.Database("storehub").Collection("build_jobs")
+	jobCol := db.DB().Collection("build_jobs")
 	opts := options.FindOne().SetSort(bson.D{{Key: "createdAt", Value: -1}})
 	var job models.BuildJob
 	err = jobCol.FindOne(ctx, bson.M{
