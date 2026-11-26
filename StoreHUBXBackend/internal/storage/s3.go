@@ -76,8 +76,13 @@ func NewS3Uploader() (*S3Uploader, error) {
 		}
 	}
 
-	// best-effort policy set
-	_ = client.SetBucketPolicy(ctx, bucket, fmt.Sprintf(`{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":"*","Action":["s3:GetObject","s3:ListBucket"],"Resource":["arn:aws:s3:::%s/*","arn:aws:s3:::%s"]}]}`, bucket, bucket))
+	// The bucket is private: no anonymous read or list. Bundles reach
+	// browsers only through the API's /bundles proxy, which enforces
+	// component visibility. (An empty policy removes any existing one,
+	// including the public-read policy older versions installed.)
+	if err := client.SetBucketPolicy(ctx, bucket, ""); err != nil {
+		return nil, fmt.Errorf("making bucket %q private failed: %w", bucket, err)
+	}
 
 	return u, nil
 }
@@ -693,4 +698,25 @@ func (u *S3Uploader) publicURL(key string) string {
 
 	// Use URL.String() to get the properly formatted URL
 	return parsed.String()
+}
+
+// Open streams one object. It returns ErrNotFound when the key doesn't exist.
+func (u *S3Uploader) Open(ctx context.Context, key string) (io.ReadCloser, ObjectInfo, error) {
+	obj, err := u.client.GetObject(ctx, u.bucket, key, minio.GetObjectOptions{})
+	if err != nil {
+		return nil, ObjectInfo{}, err
+	}
+	st, err := obj.Stat()
+	if err != nil {
+		obj.Close()
+		if minio.ToErrorResponse(err).Code == "NoSuchKey" {
+			return nil, ObjectInfo{}, ErrNotFound
+		}
+		return nil, ObjectInfo{}, err
+	}
+	ct := st.ContentType
+	if ct == "" || ct == "application/octet-stream" {
+		ct = detectContentTypeFromExt(key)
+	}
+	return obj, ObjectInfo{Size: st.Size, ContentType: ct}, nil
 }

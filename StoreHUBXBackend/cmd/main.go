@@ -15,6 +15,7 @@ import (
 	"github.com/yuwanshb005/storehubx/internal/config"
 	"github.com/yuwanshb005/storehubx/internal/db"
 	"github.com/yuwanshb005/storehubx/internal/server"
+	"github.com/yuwanshb005/storehubx/internal/storage"
 )
 
 func main() {
@@ -26,6 +27,9 @@ func main() {
 	}
 	defer db.Disconnect()
 	cache.Init()
+	if err := storage.InitBundles(); err != nil {
+		log.Fatal("object storage: ", err)
+	}
 
 	app := server.New()
 	log.Println("StoreHUB running on port", config.AppConfig.Port)

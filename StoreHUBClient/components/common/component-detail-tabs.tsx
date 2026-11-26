@@ -4,7 +4,7 @@ import { useState } from "react";
 import { Component, ComponentVersion } from "@/types";
 import { VersionsDisplay } from "./version-list";
 import { AutoDeploy } from "./auto-deploy";
-import { PreviewIframe } from "./preview-iframe";
+import { VersionPreviewTab } from "./version-list";
 import { Markdown } from "./markdown";
 import { useBuilds } from "@/hooks/use-api";
 
@@ -112,8 +112,13 @@ export function ComponentDetailTabs({ component, versions, readme }: ComponentDe
                 Version: {latestVersion.version}
               </p>
             </div>
-            <PreviewIframe
-              url={previewUrl}
+            {/* Goes through /preview so private components get a scoped
+                token; bundles are no longer publicly readable. */}
+            <VersionPreviewTab
+              slug={component.slug}
+              version={latestVersion.version}
+              ownerId={component.ownerId}
+              collaborators={component.collaborators}
               height={600}
             />
           </div>
