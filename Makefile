@@ -11,7 +11,7 @@ backend: check-backend infra
 frontend: check-frontend
 	@bash scripts/dev.sh frontend
 
-# Start only the Docker infra (Mongo, MinIO, Redis). Idempotent.
+# Start only the Docker infra (Mongo, RustFS, Redis). Idempotent.
 infra:
 	@cd StoreHUBXBackend && docker-compose up -d
 

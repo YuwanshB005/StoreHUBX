@@ -83,7 +83,7 @@ check_backend() {
   log_step "Backend ports"
   check_port_free 8080 "the API"
   check_port_free 27017 "MongoDB"
-  check_port_free 9000 "MinIO"
+  check_port_free 9000 "RustFS (S3)"
   check_port_free 6379 "Redis"
 }
 
