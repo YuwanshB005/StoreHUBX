@@ -566,7 +566,7 @@ const (
 )
 
 type BuildArtifact struct {
-    BundleURL string `bson:"bundleUrl" json:"bundleUrl"` // public URL (S3/MinIO, optionally CDN-fronted)
+    BundleURL string `bson:"bundleUrl" json:"bundleUrl"` // stored object URL; served to browsers via the API /bundles proxy
 }
 
 type BuildRepo struct {

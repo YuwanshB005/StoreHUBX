@@ -9,6 +9,7 @@ import (
 	"github.com/yuwanshb005/storehubx/internal/auth"
 	"github.com/yuwanshb005/storehubx/internal/db"
 	"github.com/yuwanshb005/storehubx/internal/models"
+	"github.com/yuwanshb005/storehubx/internal/storage"
 	"github.com/yuwanshb005/storehubx/internal/utils"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo/options"
@@ -58,7 +59,16 @@ func RedirectPreview(c *fiber.Ctx) error {
 	if comp.Visibility == "private" {
 		// Swap the one-shot preview token for a bundle token that rides in
 		// the path, so the page's relative asset requests are authorised too.
-		bt, err := auth.GenerateBundleToken(uid, slug, ver)
+		// The token must name the version folder the files actually live
+		// in. That differs from `ver` when this version reused another
+		// version's build of the same commit (see reuseCachedBuild).
+		filesVer := ver
+		if key, ok := storage.KeyFromURL(job.Artifacts.BundleURL); ok {
+			if parts := strings.SplitN(key, "/", 4); len(parts) >= 3 && parts[1] == slug {
+				filesVer = parts[2]
+			}
+		}
+		bt, err := auth.GenerateBundleToken(uid, slug, filesVer)
 		if err != nil {
 			return utils.Error(c, 500, "failed to authorise preview")
 		}
