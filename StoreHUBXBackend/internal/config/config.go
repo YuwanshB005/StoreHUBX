@@ -1,8 +1,10 @@
 package config
 
 import (
+	"fmt"
 	"log"
 	"os"
+	"strings"
 
 	"github.com/joho/godotenv"
 )
@@ -14,14 +16,20 @@ type Config struct {
 	GithubClientID string
 	GithubSecret   string
 	GithubRedirect string
+	FrontendURL    string
+	// CORSOrigins is the comma-separated list of browser origins allowed to
+	// call the API (CORS_ALLOW_ORIGINS, default FrontendURL).
+	CORSOrigins string
 }
 
 var AppConfig *Config
 
-// LoadConfig loads .env vars into AppConfig
+// LoadConfig loads .env vars into AppConfig and refuses to start with
+// missing or weak secrets.
 func LoadConfig() {
 	_ = godotenv.Load() // loads from .env if present
 
+	frontend := strings.TrimRight(getEnv("FRONTEND_URL", "http://localhost:3000"), "/")
 	AppConfig = &Config{
 		Port:           getEnv("PORT", "8080"),
 		MongoURI:       getEnv("MONGO_URI", ""),
@@ -29,10 +37,28 @@ func LoadConfig() {
 		GithubClientID: getEnv("GITHUB_CLIENT_ID", ""),
 		GithubSecret:   getEnv("GITHUB_CLIENT_SECRET", ""),
 		GithubRedirect: getEnv("GITHUB_REDIRECT_URL", ""),
+		FrontendURL:    frontend,
+		CORSOrigins:    getEnv("CORS_ALLOW_ORIGINS", frontend),
 	}
-	if AppConfig.MongoURI == "" {
-		log.Fatal("MONGO_URI not set")
+	if err := Validate(AppConfig, os.Getenv("TOKEN_ENC_KEY")); err != nil {
+		log.Fatal("config: ", err)
 	}
+}
+
+// Validate reports configuration that would make the app insecure or
+// broken. An empty JWT_SECRET used to be accepted silently, which means
+// anyone could forge login tokens.
+func Validate(c *Config, tokenEncKey string) error {
+	if c.MongoURI == "" {
+		return fmt.Errorf("MONGO_URI not set")
+	}
+	if len(c.JWTSecret) < 32 {
+		return fmt.Errorf("JWT_SECRET must be at least 32 characters (generate one with: openssl rand -base64 48)")
+	}
+	if len(tokenEncKey) != 32 {
+		return fmt.Errorf("TOKEN_ENC_KEY must be exactly 32 bytes (generate one with: openssl rand -hex 16)")
+	}
+	return nil
 }
 
 func getEnv(key, fallback string) string {

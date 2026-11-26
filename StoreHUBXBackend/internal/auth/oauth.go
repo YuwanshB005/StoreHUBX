@@ -2,7 +2,10 @@ package auth
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/subtle"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -13,29 +16,59 @@ import (
 	"time"
 
 	"github.com/gofiber/fiber/v2"
+	"github.com/yuwanshb005/storehubx/internal/config"
 	"github.com/yuwanshb005/storehubx/internal/db"
 	"github.com/yuwanshb005/storehubx/internal/utils"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
-// Redirect user to GitHub OAuth with required scopes
+const oauthStateCookie = "oauth_state"
+
+// Redirect user to GitHub OAuth with required scopes.
+//
+// A random `state` value goes both into the GitHub URL and an HttpOnly
+// cookie; the callback only proceeds when the two match. Without it, an
+// attacker could send a victim a callback link carrying the attacker's own
+// code and silently log the victim into the attacker's account (login CSRF).
 func GitHubLogin(c *fiber.Ctx) error {
 	clientID := os.Getenv("GITHUB_CLIENT_ID")
 	if clientID == "" {
 		return utils.Error(c, 500, "missing GitHub client ID")
 	}
 
-	scopes := []string{"user:email", "read:user", "repo", "read:org"}
-	// join scopes with URL-encoded separator
-	url := fmt.Sprintf("https://github.com/login/oauth/authorize?client_id=%s&scope=%s",
-		clientID, strings.Join(scopes, "%20"))
-	return c.Redirect(url)
+	buf := make([]byte, 32)
+	if _, err := rand.Read(buf); err != nil {
+		return utils.Error(c, 500, "failed to create login state")
+	}
+	state := hex.EncodeToString(buf)
+	c.Cookie(&fiber.Cookie{
+		Name:     oauthStateCookie,
+		Value:    state,
+		Path:     "/auth/github",
+		MaxAge:   600,
+		HTTPOnly: true,
+		Secure:   c.Protocol() == "https",
+		SameSite: fiber.CookieSameSiteLaxMode,
+	})
+
+	q := url.Values{}
+	q.Set("client_id", clientID)
+	q.Set("scope", strings.Join([]string{"user:email", "read:user", "repo", "read:org"}, " "))
+	q.Set("state", state)
+	return c.Redirect("https://github.com/login/oauth/authorize?" + q.Encode())
 }
 
 // GitHub callback: exchange code → token → user → save → JWT
 // GitHub callback: exchange code → token → user → save → JWT
 func GitHubCallback(c *fiber.Ctx) error {
+	state := c.Query("state")
+	expected := c.Cookies(oauthStateCookie)
+	c.ClearCookie(oauthStateCookie)
+	if state == "" || expected == "" || subtle.ConstantTimeCompare([]byte(state), []byte(expected)) != 1 {
+		return utils.Error(c, 400, "invalid or expired login state, please try logging in again")
+	}
+
 	code := c.Query("code")
 	if code == "" {
 		return utils.Error(c, 400, "missing code parameter")
@@ -203,10 +236,7 @@ func GitHubCallback(c *fiber.Ctx) error {
 	// })
 
 	// Get frontend URL from environment variable, defaulting to localhost:3000 for development
-	frontendURL := os.Getenv("FRONTEND_URL")
-	if frontendURL == "" {
-		frontendURL = "http://localhost:3000"
-	}
+	frontendURL := config.AppConfig.FrontendURL
 
 	// Create a user data object to pass along with the token. "id" is the
 	// providerId (same value as JWT's user_id claim and Component.OwnerID) —
@@ -227,9 +257,13 @@ func GitHubCallback(c *fiber.Ctx) error {
 	// Base64 encode the user data (for atob() in frontend)
 	encodedUserData := base64.StdEncoding.EncodeToString(userData)
 
-	// Redirect to the Next.js auth-callback route with both token and user data
-	// Using /auth-callback to match the Next.js component path
-	return c.Redirect(fmt.Sprintf("%s/auth/callback?token=%s&user=%s", frontendURL, jwtToken, encodedUserData))
+	// Hand the token to the frontend in the URL fragment (#), not the query
+	// string: a fragment is never sent to any server, so the 72h token can't
+	// leak into server/proxy logs or Referer headers.
+	frag := url.Values{}
+	frag.Set("token", jwtToken)
+	frag.Set("user", encodedUserData)
+	return c.Redirect(fmt.Sprintf("%s/auth/callback#%s", frontendURL, frag.Encode()))
 }
 
 func providerIDFrom(gh map[string]interface{}) string {
