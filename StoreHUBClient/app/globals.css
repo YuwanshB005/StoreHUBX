@@ -1,0 +1,276 @@
+@import "tailwindcss";
+
+/* Tailwind v4: class-based dark mode variant */
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* Theme tokens - Warm Paper Design System
+   ONE tone per mode — page and cards share a colour in both light and
+   dark. Separation comes from the 2px borders, which is how this
+   brutalist system is meant to work; a lighter "card" tone on a darker
+   page just reads as two mismatched backgrounds. Depth, where a surface
+   genuinely needs it, comes from bg-black/5 tints of the ink colour.
+
+   Light: paper #EFE8D9 on warm near-black ink.
+   Dark:  the same two colours swapped — warm charcoal #1B1712 canvas
+          (--color-black, so `dark:bg-black` cards match the page exactly)
+          with warm paper ink. Neither mode uses a cold grey or a pure
+          #000/#FFF anywhere. */
+@theme {
+  --color-page:      #EFE8D9;  /* the single warm paper tone */
+  --color-ink:       #1B1712;  /* warm near-black — text, borders, fills */
+  --radius-xl:       0;        /* sharp corners for brutalist design */
+
+  /* Override Tailwind's built-ins so every bg-white / border-black /
+     text-white utility already in the app picks up the warm palette in
+     light mode without editing each component. */
+  --color-white:     #EFE8D9;
+  --color-black:     #1B1712;
+}
+
+:root { 
+  color-scheme: light;
+}
+
+.dark { 
+  color-scheme: dark;
+}
+
+html, body {
+  height: 100%;
+  overflow-x: hidden;
+  font-family: ui-monospace, 'SF Mono', Monaco, 'Cascadia Code', 'Roboto Mono', Menlo, Consolas, 'Courier New', monospace;
+}
+
+/* Scrollbar styling for the warm paper theme */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: #EFE8D9;
+  border: 1px solid #1B1712;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #1B1712;
+  border: 1px solid #1B1712;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #4A4038;
+}
+
+.dark ::-webkit-scrollbar-track {
+  background: #1B1712;
+  border: 1px solid #EFE8D9;
+}
+
+.dark ::-webkit-scrollbar-thumb {
+  background: #EFE8D9;
+  border: 1px solid #EFE8D9;
+}
+
+.dark ::-webkit-scrollbar-thumb:hover {
+  background: #C9C1B0;
+}
+
+/* Selection styling */
+::selection {
+  background: #1B1712;
+  color: #EFE8D9;
+}
+
+.dark ::selection {
+  background: #EFE8D9;
+  color: #1B1712;
+}
+
+/* Custom Animations */
+@keyframes marquee {
+  0% { transform: translateX(0%); }
+  100% { transform: translateX(-100%); }
+}
+
+.animate-marquee {
+  animation: marquee 30s linear infinite;
+}
+
+.animate-marquee:hover {
+  animation-play-state: paused;
+}
+
+/* Background Pattern (SVG Grid) */
+.bg-grid-pattern {
+  background-image: linear-gradient(to right, rgba(0,0,0,0.1) 1px, transparent 1px),
+                    linear-gradient(to bottom, rgba(0,0,0,0.1) 1px, transparent 1px);
+  background-size: 40px 40px;
+}
+
+.dark .bg-grid-pattern {
+  background-image: linear-gradient(to right, rgba(255,255,255,0.1) 1px, transparent 1px),
+                    linear-gradient(to bottom, rgba(255,255,255,0.1) 1px, transparent 1px);
+}
+
+/* ---------------------------------------------------------------- */
+/* Phase 5: unified hover/press physics, entrance & feedback motion */
+/* ---------------------------------------------------------------- */
+
+/* Item 31 — smooth the light/dark flip everywhere by default.
+   Lives in @layer base so any element's own transition-* utility
+   (in the utilities layer) still wins and sets its own timing. */
+@layer base {
+  *, *::before, *::after {
+    transition-property: background-color, border-color, color, fill, stroke;
+    transition-duration: 200ms;
+    transition-timing-function: ease-out;
+  }
+
+  /* Item 35 — one crisp, high-contrast focus affordance for keyboard nav,
+     matching the site's 2px-border language instead of the browser default. */
+  :focus-visible {
+    outline: 2px solid #1B1712;
+    outline-offset: 2px;
+  }
+  .dark :focus-visible {
+    outline-color: #EFE8D9;
+  }
+}
+
+@layer utilities {
+  /* Item 25/27 — the "primary" brutalist hover: diagonal lift + hard
+     shadow that grows in smoothly (explicit transition list, not
+     transition-all, so the offset genuinely tweens instead of snapping). */
+  .brutal-lift {
+    --lift: 4px;
+    transition: transform 150ms ease-out, box-shadow 150ms ease-out,
+      background-color 200ms ease-out, border-color 200ms ease-out, color 200ms ease-out;
+  }
+  .brutal-lift:hover {
+    transform: translate(calc(var(--lift) * -1), calc(var(--lift) * -1));
+    box-shadow: var(--lift) var(--lift) 0px 0px #1B1712;
+  }
+  .dark .brutal-lift:hover {
+    box-shadow: var(--lift) var(--lift) 0px 0px #EFE8D9;
+  }
+  .brutal-lift:active {
+    transform: translate(0, 0);
+    box-shadow: none;
+  }
+  .brutal-lift-lg {
+    --lift: 8px;
+  }
+
+  /* Item 25 — the "secondary" hover for compact nav/utility controls. */
+  .brutal-scale {
+    transition: transform 150ms ease-out, background-color 200ms ease-out,
+      border-color 200ms ease-out, color 200ms ease-out;
+  }
+  .brutal-scale:hover {
+    transform: scale(1.05);
+  }
+  .brutal-scale:active {
+    transform: scale(0.95);
+  }
+
+  /* Item 26 — staggered fade/slide entrance for grid & list content. */
+  @keyframes fade-slide-up {
+    from {
+      opacity: 0;
+      transform: translateY(12px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+  .stagger-in {
+    opacity: 0;
+    animation: fade-slide-up 420ms ease-out forwards;
+    animation-delay: calc(var(--stagger-index, 0) * 60ms);
+  }
+
+  /* Item 28 — page-level route transition. */
+  @keyframes page-in {
+    from {
+      opacity: 0;
+      transform: translateY(8px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+  .animate-page-in {
+    animation: page-in 260ms ease-out;
+  }
+
+  /* Item 29 — shimmer sweep for loading skeletons, replacing the flat pulse. */
+  @keyframes shimmer-sweep {
+    from {
+      background-position: -200% 0;
+    }
+    to {
+      background-position: 200% 0;
+    }
+  }
+  .skeleton-shimmer {
+    background-image: linear-gradient(
+      100deg,
+      rgba(0, 0, 0, 0.06) 20%,
+      rgba(0, 0, 0, 0.16) 40%,
+      rgba(0, 0, 0, 0.06) 60%
+    );
+    background-size: 200% 100%;
+    animation: shimmer-sweep 1.6s ease-in-out infinite;
+  }
+  .dark .skeleton-shimmer {
+    background-image: linear-gradient(
+      100deg,
+      rgba(255, 255, 255, 0.06) 20%,
+      rgba(255, 255, 255, 0.2) 40%,
+      rgba(255, 255, 255, 0.06) 60%
+    );
+  }
+
+  /* Item 30 — tactile "punch" confirmation for like/rate actions. */
+  @keyframes brutal-punch {
+    0% {
+      transform: scale(1);
+    }
+    40% {
+      transform: scale(0.92);
+    }
+    70% {
+      transform: scale(1.08);
+    }
+    100% {
+      transform: scale(1);
+    }
+  }
+  .animate-punch {
+    animation: brutal-punch 320ms ease-out;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .stagger-in,
+  .animate-page-in,
+  .skeleton-shimmer,
+  .animate-punch {
+    animation: none !important;
+    opacity: 1 !important;
+  }
+  /* The marquee loops forever, so it's the most disruptive of the lot. Its
+     content is duplicated and overflow-hidden, so stopping it just leaves a
+     static strip. */
+  .animate-marquee {
+    animation: none !important;
+  }
+  .brutal-lift,
+  .brutal-scale,
+  *, *::before, *::after {
+    transition: none !important;
+  }
+}
+

@@ -1,0 +1,292 @@
+"use client";
+
+import { useState } from "react";
+import { useBuilds } from "@/hooks/use-api";
+import { formatRelativeTime } from "@/lib/api-utils";
+import { buildApi } from "@/lib/api";
+import { useAuth } from "@/lib/store";
+import { AlertTriangle, Clock, Loader2, CheckCircle2, XCircle, Info, ChevronDown, ChevronRight, ExternalLink, type LucideIcon } from "lucide-react";
+
+interface VersionBuildsProps {
+  slug: string;
+  version: string;
+  /** Component owner/collaborator data, needed to gate the Rebuild control to
+   * users the backend will actually allow to rebuild (owner or collaborator). */
+  ownerId?: string;
+  collaborators?: string[];
+}
+
+export function VersionBuilds({ slug, version, ownerId, collaborators }: VersionBuildsProps) {
+  const { data: builds, loading, error, refetch } = useBuilds(slug, version);
+  const [expandedBuildId, setExpandedBuildId] = useState<string | null>(null);
+  const { token, user } = useAuth();
+  const [rebuilding, setRebuilding] = useState(false);
+  const [rebuildError, setRebuildError] = useState<string | null>(null);
+
+  if (loading) {
+    return (
+      <div className="p-6 border border-black dark:border-white">
+        <div className="flex items-center gap-3 font-mono text-sm">
+          <div className="w-4 h-4 border-2 border-black dark:border-white border-t-transparent animate-spin" />
+          <span>Loading builds...</span>
+        </div>
+      </div>
+    );
+  }
+
+  // Only fall through to a full-page error when there's truly no data to
+  // show (first load failed). If we have stale-but-valid builds from a
+  // prior fetch, render them with an inline warning instead of blanking
+  // the whole list on a transient poll failure.
+  if (!builds || builds.length === 0) {
+    if (error) {
+      return (
+        <div className="p-6 border border-red-600 dark:border-red-400">
+          <p className="font-mono text-sm text-red-600 dark:text-red-400 flex items-center gap-1.5"><AlertTriangle className="w-4 h-4 shrink-0" /> {error}</p>
+        </div>
+      );
+    }
+
+    return (
+      <div className="p-6 border border-black dark:border-white text-center">
+        <p className="font-mono text-sm text-black/60 dark:text-white/60">No builds yet</p>
+      </div>
+    );
+  }
+
+  const getStatusConfig = (status: string): { label: string; icon: LucideIcon; color: string; border: string } => {
+    switch (status) {
+      case "queued":
+        return {
+          label: "Queued",
+          icon: Clock,
+          color: "text-yellow-700 dark:text-yellow-400",
+          border: "border-yellow-600",
+        };
+      case "running":
+        return {
+          label: "Building",
+          icon: Loader2,
+          color: "text-blue-700 dark:text-blue-400",
+          border: "border-blue-600",
+        };
+      case "success":
+        return {
+          label: "Success",
+          icon: CheckCircle2,
+          color: "text-green-700 dark:text-green-400",
+          border: "border-green-600",
+        };
+      case "error":
+        return {
+          label: "Failed",
+          icon: XCircle,
+          color: "text-red-700 dark:text-red-400",
+          border: "border-red-600",
+        };
+      default:
+        return {
+          label: status,
+          icon: Info,
+          color: "text-black dark:text-white",
+          border: "border-black dark:border-white",
+        };
+    }
+  };
+
+  const toggleBuildExpansion = (buildId: string) => {
+    setExpandedBuildId(expandedBuildId === buildId ? null : buildId);
+  };
+
+  // Mirrors the backend's own check (owner or collaborator) — see
+  // owner-actions.tsx / auto-deploy.tsx for the same ownerId comparison
+  // pattern used elsewhere in this codebase.
+  const isOwner = !!(
+    user &&
+    ownerId &&
+    (user.providerId === ownerId || collaborators?.includes(user.providerId))
+  );
+  const canRebuild = !!token && isOwner;
+
+  const handleRebuild = async () => {
+    if (!canRebuild || !token) return;
+    
+    setRebuilding(true);
+    setRebuildError(null);
+    
+    try {
+      await buildApi.enqueue(slug, version, token);
+      // Refetch the build list to show the new build
+      await refetch();
+    } catch (err) {
+      setRebuildError(err instanceof Error ? err.message : "Failed to rebuild");
+    } finally {
+      setRebuilding(false);
+    }
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between pb-3 border-b border-black dark:border-white">
+        <h4 className="font-mono text-sm font-bold">Build History ({builds.length})</h4>
+        {canRebuild && (
+          <button
+            onClick={handleRebuild}
+            disabled={rebuilding}
+            className="px-3 py-1.5 border-2 border-black dark:border-white text-xs font-mono disabled:opacity-50 transition-transform hover:scale-105 active:scale-95 disabled:cursor-not-allowed"
+            title="Trigger a new build"
+          >
+            {rebuilding ? "Building..." : "Rebuild"}
+          </button>
+        )}
+      </div>
+
+      {/* Transient poll error — stale data is still shown above, this is just a heads-up */}
+      {error && (
+        <div className="border border-yellow-600 dark:border-yellow-400 bg-yellow-50 dark:bg-yellow-950 p-3">
+          <p className="font-mono text-xs text-yellow-800 dark:text-yellow-200 flex items-center gap-1.5"><AlertTriangle className="w-3.5 h-3.5 shrink-0" /> Showing last known builds — {error}</p>
+        </div>
+      )}
+
+      {/* Rebuild Error Message */}
+      {rebuildError && (
+        <div className="border border-red-600 dark:border-red-400 bg-red-50 dark:bg-red-950 p-3">
+          <p className="font-mono text-xs text-red-600 dark:text-red-400 flex items-center gap-1.5"><AlertTriangle className="w-3.5 h-3.5 shrink-0" /> {rebuildError}</p>
+        </div>
+      )}
+      
+      <div className="space-y-3">
+        {builds.map((build, index) => {
+          const statusConfig = getStatusConfig(build.status);
+          const isExpanded = expandedBuildId === build.id;
+          // `builds` is sorted newest-first by the backend, so the build to
+          // diff against is the next one in the array, not the previous.
+          const previousBuild = builds[index + 1];
+          const canCompare = !!(
+            build.repo?.commit &&
+            previousBuild?.repo?.commit &&
+            build.repo.commit !== previousBuild.repo.commit &&
+            build.repo.owner &&
+            build.repo.repo &&
+            previousBuild.repo.owner === build.repo.owner &&
+            previousBuild.repo.repo === build.repo.repo
+          );
+
+          return (
+            <div
+              key={build.id}
+              className={`border ${statusConfig.border}`}
+            >
+              {/* Build Header - Clickable */}
+              <button
+                onClick={() => toggleBuildExpansion(build.id)}
+                aria-expanded={isExpanded}
+                aria-label={`${isExpanded ? "Collapse" : "Expand"} build details`}
+                className="w-full p-3 text-left hover:opacity-80 transition-opacity"
+              >
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    <span className={`font-mono text-sm font-bold flex items-center gap-1.5 ${statusConfig.color}`}>
+                      <statusConfig.icon className={`w-4 h-4 ${build.status === "running" ? "animate-spin" : ""}`} />
+                      {statusConfig.label}
+                    </span>
+                    <span className="text-xs font-mono text-black/60 dark:text-white/60">
+                      #{build.id.slice(0, 8)}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <span className="text-xs font-mono text-black/60 dark:text-white/60">
+                      {formatRelativeTime(build.createdAt)}
+                    </span>
+                    {isExpanded ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
+                  </div>
+                </div>
+              </button>
+
+              {/* Expanded Build Details */}
+              {isExpanded && (
+                <div className="border-t border-current p-3 space-y-3">
+                  {/* Build Info */}
+                  <div className="grid grid-cols-2 gap-2 text-xs">
+                    {build.repo && (
+                      <>
+                        <div className="border border-black dark:border-white p-2">
+                          <p className="font-mono text-black/60 dark:text-white/60 mb-1">Repository</p>
+                          <p className="font-mono font-bold">{build.repo.owner}/{build.repo.repo}</p>
+                        </div>
+                        <div className="border border-black dark:border-white p-2">
+                          <p className="font-mono text-black/60 dark:text-white/60 mb-1">Branch/Ref</p>
+                          <p className="font-mono font-bold">{build.repo.ref}</p>
+                        </div>
+                        {build.repo.commit && (
+                          <div className="border border-black dark:border-white p-2">
+                            <p className="font-mono text-black/60 dark:text-white/60 mb-1">Commit</p>
+                            <div className="flex items-center gap-2">
+                              <p className="font-mono font-bold">{build.repo.commit.slice(0, 7)}</p>
+                              {canCompare && (
+                                <a
+                                  href={`https://github.com/${build.repo.owner}/${build.repo.repo}/compare/${previousBuild.repo.commit}...${build.repo.commit}`}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="inline-flex items-center gap-1 font-mono text-black/60 dark:text-white/60 hover:text-black dark:hover:text-white hover:underline"
+                                  title={`Compare with previous build (${previousBuild.repo.commit!.slice(0, 7)})`}
+                                >
+                                  Compare <ExternalLink className="w-3 h-3 shrink-0" />
+                                </a>
+                              )}
+                            </div>
+                          </div>
+                        )}
+                        {build.repo.path && (
+                          <div className="border border-black dark:border-white p-2">
+                            <p className="font-mono text-black/60 dark:text-white/60 mb-1">Path</p>
+                            <p className="font-mono font-bold">{build.repo.path}</p>
+                          </div>
+                        )}
+                      </>
+                    )}
+                    <div className="border border-black dark:border-white p-2">
+                      <p className="font-mono text-black/60 dark:text-white/60 mb-1">Started</p>
+                      <p className="font-mono">{build.startedAt ? formatRelativeTime(build.startedAt) : "—"}</p>
+                    </div>
+                    <div className="border border-black dark:border-white p-2">
+                      <p className="font-mono text-black/60 dark:text-white/60 mb-1">Completed</p>
+                      <p className="font-mono">{build.endedAt ? formatRelativeTime(build.endedAt) : "—"}</p>
+                    </div>
+                  </div>
+
+                  {/* Artifacts */}
+                  {build.artifacts?.bundleUrl && (
+                    <div className="pt-3 border-t border-black dark:border-white">
+                      <p className="font-mono text-xs font-bold mb-2">Bundle</p>
+                      <a
+                        href={build.artifacts.bundleUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-xs font-mono hover:underline break-all"
+                      >
+                        {build.artifacts.bundleUrl}
+                      </a>
+                    </div>
+                  )}
+
+                  {/* Logs */}
+                  {build.logs && build.logs.length > 0 && (
+                    <div className="pt-3 border-t border-black dark:border-white">
+                      <p className="font-mono text-xs font-bold mb-2">Build Logs</p>
+                      <div className="bg-black dark:bg-white text-white dark:text-black border border-black dark:border-white p-3 max-h-64 overflow-y-auto">
+                        <pre className="text-xs font-mono whitespace-pre-wrap">
+                          {build.logs.join('\n')}
+                        </pre>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
