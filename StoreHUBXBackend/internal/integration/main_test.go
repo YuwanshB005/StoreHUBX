@@ -11,6 +11,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -45,7 +46,7 @@ func TestMain(m *testing.M) {
 	setDefault("AWS_ACCESS_KEY_ID", "minioadmin")
 	setDefault("AWS_SECRET_ACCESS_KEY", "minioadmin")
 	os.Setenv("S3_BUCKET", "storehub-test")
-	os.Setenv("S3_PUBLIC_BASE_URL", "http://localhost:9000/storehub-test")
+	os.Setenv("S3_PUBLIC_BASE_URL", strings.TrimRight(os.Getenv("S3_ENDPOINT"), "/")+"/storehub-test")
 	os.Setenv("FRONTEND_URL", "http://localhost:3000")
 
 	if !mongoReachable(os.Getenv("MONGO_URI")) {
