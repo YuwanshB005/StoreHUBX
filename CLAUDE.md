@@ -60,6 +60,8 @@ Components can be linked to a GitHub repo/path/ref (`internal/handlers/component
 3. Progress is streamed by pushing log lines onto the `BuildJob.logs` array in Mongo as the job runs; status transitions are `BuildQueued -> BuildRunning -> BuildSuccess|BuildError`. A failed job is requeued with exponential backoff (`Attempts`/`MaxAttempts`/`NextAttemptAt`, `10s * 2^attempt` capped at 2m) instead of failing permanently until `MaxAttempts` is hit. On success the corresponding `ComponentVersion` is patched with `previewUrl` and `buildState`.
 4. `GET /builds/:id` and `GET /components/:slug/versions/:version/builds` (both public, no auth) let the frontend poll job status/logs.
 
+Automatic version numbers come from an atomic counter on the component (`components.autoVersion`, `internal/handlers/versioning.go`), never from read-latest-then-add-one; the unique indexes on `component_versions` are the final arbiter and duplicate-key errors map to 409. The push webhook records each `X-GitHub-Delivery` id in `webhook_deliveries` (unique `_id`, 7-day TTL) so redeliveries are no-ops.
+
 Because the API server and worker are separate binaries/processes, any change to `BuildJob` fields or status semantics must stay in sync across `internal/handlers/build.go` and `internal/worker/worker.go`.
 
 Storage is abstracted behind the `storage.Uploader` interface (`internal/storage/storage.go`, implemented by `internal/storage/s3.go` for MinIO/S3) — build output publishing goes through `PublishComponentFromDist`, which also rewrites asset paths so uploaded bundles are served correctly. `publicURL()` honors `CDN_BASE_URL` when set, falling back to `S3_PUBLIC_BASE_URL`.

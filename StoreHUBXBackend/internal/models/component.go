@@ -30,8 +30,19 @@ type Component struct {
 	Visibility    string   `bson:"visibility" json:"visibility"` // "public" | "private"
 	Collaborators []string `bson:"collaborators" json:"collaborators"`
 
+	// AutoVersion is the last automatically assigned version; advanced
+	// atomically by handlers.nextAutoVersion. Internal only.
+	AutoVersion *SemVer `bson:"autoVersion,omitempty" json:"-"`
+
 	CreatedAt time.Time `bson:"createdAt" json:"createdAt"`
 	UpdatedAt time.Time `bson:"updatedAt" json:"updatedAt"`
+}
+
+// SemVer is a major.minor.patch version.
+type SemVer struct {
+	Major int `bson:"major"`
+	Minor int `bson:"minor"`
+	Patch int `bson:"patch"`
 }
 
 type RepoLink struct {
