@@ -1,5 +1,5 @@
 // Package integration runs the real HTTP stack (internal/server) against real
-// MongoDB, Redis and MinIO. It uses its own database (MONGO_DB=storehub_test)
+// MongoDB, Redis and S3 storage (RustFS). It uses its own database (MONGO_DB=storehub_test)
 // and Redis DB 15, so it never touches development data.
 //
 // Run locally after `make infra`:   go test -p 1 ./...

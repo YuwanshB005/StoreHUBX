@@ -1,5 +1,5 @@
 #!/bin/bash
-# Start the whole project: Docker infra (Mongo, MinIO, Redis) + API + worker +
+# Start the whole project: Docker infra (Mongo, RustFS, Redis) + API + worker +
 # frontend. Ctrl+C stops the app processes;
 # run ./kill.sh to also bring down Docker and free every port.
 set -uo pipefail

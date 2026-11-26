@@ -7,17 +7,21 @@ services:
     volumes:
       - mongodb_data:/data/db
 
-  minio:
-    image: quay.io/minio/minio
-    command: server /data --console-address ":9001"
+  # S3-compatible object storage for built bundles. RustFS replaces MinIO,
+  # which no longer publishes public container images. The API talks to it
+  # through the standard S3 API, so any S3 server works here.
+  rustfs:
+    image: rustfs/rustfs:latest
+    command: server /data
     environment:
-      - MINIO_ROOT_USER=minioadmin
-      - MINIO_ROOT_PASSWORD=minioadmin
+      - RUSTFS_ACCESS_KEY=minioadmin
+      - RUSTFS_SECRET_KEY=minioadmin
+      - RUSTFS_CONSOLE_ENABLE=true
     ports:
-      - "9000:9000"
-      - "9001:9001"
+      - "9000:9000"   # S3 API
+      - "9001:9001"   # web console
     volumes:
-      - minio_data:/data
+      - rustfs_data:/data
 
   redis:
     image: redis:7-alpine
@@ -26,4 +30,4 @@ services:
 
 volumes:
   mongodb_data:
-  minio_data:
+  rustfs_data:
