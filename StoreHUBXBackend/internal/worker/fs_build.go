@@ -60,10 +60,10 @@ func unzip(srcZip, destDir string) (string, error) {
 	return topDir, nil
 }
 
-func (p *Processor) maybeBuildWithNode(ctx context.Context, jobID primitive.ObjectID, workingDir string) error {
+func (p *Processor) maybeBuildWithNode(ctx context.Context, job *models.BuildJob, workingDir string) error {
 	if _, err := os.Stat(filepath.Join(workingDir, "package.json")); err == nil {
-		logf := func(line string) { p.logPush(ctx, jobID, line) }
-		if err := runNodeBuild(ctx, "storehubx-build-"+jobID.Hex(), workingDir, logf); err != nil {
+		logf := func(line string) { p.logPush(ctx, job, line) }
+		if err := runNodeBuild(ctx, "storehubx-build-"+job.ID.Hex()+"-"+job.LeaseToken, workingDir, logf); err != nil {
 			return err
 		}
 		for _, out := range []string{"dist", "build"} {

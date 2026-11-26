@@ -64,9 +64,13 @@ func envOr(key, def string) string {
 
 const buildScript = "npm ci --no-audit --no-fund && npm run build"
 
+// ErrPermanent marks failures that retrying cannot fix (bad code, missing
+// commit, no output). Such jobs fail immediately instead of using retries.
+var ErrPermanent = errors.New("permanent failure")
+
 // errBuildFailed marks a build that ran and failed (bad code, failing
 // script, limit exceeded). Retrying it would fail the same way.
-var errBuildFailed = errors.New("build failed")
+var errBuildFailed = fmt.Errorf("build failed (%w)", ErrPermanent)
 
 // runNodeBuild builds workingDir in place, leaving dist/ or build/ there.
 func runNodeBuild(ctx context.Context, name, workingDir string, logf func(string)) error {

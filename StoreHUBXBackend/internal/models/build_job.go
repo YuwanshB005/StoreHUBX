@@ -47,4 +47,12 @@ type BuildJob struct {
 	StartedAt     *time.Time `bson:"startedAt,omitempty" json:"startedAt,omitempty"`
 	EndedAt       *time.Time `bson:"endedAt,omitempty" json:"endedAt,omitempty"`
 	NextAttemptAt *time.Time `bson:"nextAttemptAt,omitempty" json:"nextAttemptAt,omitempty"` // set when retrying after backoff
+
+	// Lease: a worker that claims a job owns it only until LeaseExpiresAt
+	// and must keep renewing it. LeaseToken is a fencing token, new on every
+	// claim; all of a worker's writes are conditioned on it, so a worker
+	// that lost its lease (crashed, paused, partitioned) can't overwrite
+	// the attempt that replaced it.
+	LeaseToken     string     `bson:"leaseToken,omitempty" json:"-"`
+	LeaseExpiresAt *time.Time `bson:"leaseExpiresAt,omitempty" json:"leaseExpiresAt,omitempty"`
 }

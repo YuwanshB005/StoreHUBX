@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/redis/go-redis/v9"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 
 	"github.com/yuwanshb005/storehubx/internal/auth"
@@ -130,4 +131,8 @@ func expectStatus(t *testing.T, r resp, want int, what string) {
 	if r.Status != want {
 		t.Fatalf("%s: status %d, want %d; body: %s", what, r.Status, want, string(r.Raw))
 	}
+}
+
+func redisZ(at time.Time, member string) redis.Z {
+	return redis.Z{Score: float64(at.UnixMilli()), Member: member}
 }
