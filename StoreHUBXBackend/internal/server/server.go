@@ -9,6 +9,7 @@ import (
 	"github.com/gofiber/swagger"
 
 	_ "github.com/yuwanshb005/storehubx/docs" // Swagger generated docs
+	"github.com/yuwanshb005/storehubx/internal/config"
 	"github.com/yuwanshb005/storehubx/internal/middleware"
 	"github.com/yuwanshb005/storehubx/internal/routes"
 )
@@ -18,8 +19,9 @@ import (
 func New() *fiber.App {
 	app := fiber.New()
 
+	// Only the frontend's own origin may call the API from a browser.
 	app.Use(cors.New(cors.Config{
-		AllowOrigins: "*",
+		AllowOrigins: config.AppConfig.CORSOrigins,
 		AllowHeaders: "Origin, Content-Type, Authorization",
 	}))
 	app.Use(recover.New())

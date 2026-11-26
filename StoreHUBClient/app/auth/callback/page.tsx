@@ -1,16 +1,22 @@
 "use client";
 
-import { Suspense, useEffect, useState } from "react";
-import { useSearchParams, useRouter } from "next/navigation";
+import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 import { useAuth } from "@/lib/store";
 
-function AuthCallbackContent() {
-  const params = useSearchParams();
+// The backend hands the token over in the URL fragment (#token=…&user=…),
+// not the query string: a fragment never leaves the browser, so the token
+// can't end up in server logs or Referer headers. It is wiped from the
+// address bar as soon as it has been read.
+export default function AuthCallback() {
   const router = useRouter();
   const setAuth = useAuth((s) => s.setAuth);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
+    const params = new URLSearchParams(window.location.hash.slice(1));
+    window.history.replaceState(null, "", window.location.pathname);
+
     const token = params.get("token");
     const encodedUser = params.get("user"); // base64 of JSON
 
@@ -29,19 +35,11 @@ function AuthCallbackContent() {
       setError("Sign-in failed: missing authentication data.");
       setTimeout(() => router.replace("/"), 2000);
     }
-  }, [params, router, setAuth]);
+  }, [router, setAuth]);
 
   return (
     <div className="py-20 text-center opacity-80">
       {error ?? "Completing sign-in…"}
     </div>
-  );
-}
-
-export default function AuthCallback() {
-  return (
-    <Suspense fallback={<div className="py-20 text-center opacity-80">Completing sign-in…</div>}>
-      <AuthCallbackContent />
-    </Suspense>
   );
 }

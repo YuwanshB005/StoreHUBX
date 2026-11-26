@@ -4,33 +4,19 @@ import (
 	"strings"
 
 	"github.com/gofiber/fiber/v2"
-	"github.com/golang-jwt/jwt/v5"
-	"github.com/yuwanshb005/storehubx/internal/config"
+	"github.com/yuwanshb005/storehubx/internal/auth"
 	"github.com/yuwanshb005/storehubx/internal/utils"
 )
 
 // parseBearerClaims extracts user_id/email from a "Bearer <jwt>" Authorization
-// header. ok is false if the header is missing, malformed, or the token is invalid.
+// header. Only API-audience tokens are accepted: preview or bundle tokens are
+// rejected even though they are signed with the same secret.
 func parseBearerClaims(authHeader string) (userID, email string, ok bool) {
 	tokenStr := strings.TrimPrefix(authHeader, "Bearer ")
 	if tokenStr == "" || tokenStr == authHeader {
 		return "", "", false
 	}
-
-	token, err := jwt.Parse(tokenStr, func(t *jwt.Token) (interface{}, error) {
-		return []byte(config.AppConfig.JWTSecret), nil
-	})
-	if err != nil || !token.Valid {
-		return "", "", false
-	}
-
-	claims, ok := token.Claims.(jwt.MapClaims)
-	if !ok {
-		return "", "", false
-	}
-	userID, _ = claims["user_id"].(string)
-	email, _ = claims["email"].(string)
-	return userID, email, true
+	return auth.VerifyAPIToken(tokenStr)
 }
 
 // JWTProtected requires a valid bearer JWT, rejecting the request if it's missing/invalid.
