@@ -95,3 +95,35 @@ func VerifyPreviewToken(tokenString, slug, version string) (userID string, ok bo
 	uid, _ := claims["user_id"].(string)
 	return uid, uid != ""
 }
+
+// GenerateBundleToken mints the capability that lets a browser load a
+// private component's built files. It travels in the URL path
+// (/bundles/t/<token>/components/...), so the bundle's relative asset URLs
+// carry it automatically. Scoped to one slug/version, 30 minutes.
+func GenerateBundleToken(userID, slug, version string) (string, error) {
+	now := time.Now()
+	return sign(jwt.MapClaims{
+		"user_id": userID,
+		"aud":     AudienceBundle,
+		"slug":    slug,
+		"version": version,
+		"exp":     now.Add(30 * time.Minute).Unix(),
+		"iat":     now.Unix(),
+	})
+}
+
+// VerifyBundleToken checks a bundle token for exactly this slug/version.
+func VerifyBundleToken(tokenString, slug, version string) (userID string, ok bool) {
+	claims, ok := parse(tokenString, AudienceBundle)
+	if !ok {
+		return "", false
+	}
+	if s, _ := claims["slug"].(string); s != slug {
+		return "", false
+	}
+	if v, _ := claims["version"].(string); v != version {
+		return "", false
+	}
+	uid, _ := claims["user_id"].(string)
+	return uid, uid != ""
+}

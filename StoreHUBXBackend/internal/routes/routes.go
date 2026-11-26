@@ -39,6 +39,11 @@ func RegisterRoutes(app *fiber.App) {
 	// Preview (public access)
 	app.Get("/preview/:slug/:version", middleware.OptionalAuth, handlers.RedirectPreview)
 
+	// Built component files, served from the private bucket with a
+	// visibility check on every request (see handlers/bundle_handler.go).
+	app.Get("/bundles/components/:slug/:version/*", handlers.ServeBundle)
+	app.Get("/bundles/t/:token/components/:slug/:version/*", handlers.ServeBundleWithToken)
+
 	// GitHub push webhook (public - authenticated via HMAC signature, Phase 4.12)
 	app.Post("/webhooks/github/:slug", handlers.HandleGitHubWebhook)
 

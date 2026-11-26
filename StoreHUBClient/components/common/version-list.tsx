@@ -20,16 +20,18 @@ import { formatDate } from "@/lib/api-utils";
 // can't carry an Authorization header) for a private component's preview.
 // If the token fetch still fails (e.g. a transient error), fall back to the
 // plain unsigned URL — worst case it 404s the same way it does today.
-function VersionPreviewTab({
+export function VersionPreviewTab({
   slug,
   version,
   ownerId,
   collaborators,
+  height,
 }: {
   slug: string;
   version: string;
   ownerId?: string;
   collaborators?: string[];
+  height?: number;
 }) {
   const { token: authToken, user } = useAuth();
   const baseUrl = previewApi.getPreviewUrl(slug, version);
@@ -84,7 +86,7 @@ function VersionPreviewTab({
     );
   }
 
-  return <PreviewIframe url={signedUrl || baseUrl} />;
+  return <PreviewIframe url={signedUrl || baseUrl} height={height} />;
 }
 
 export type VersionDoc = {

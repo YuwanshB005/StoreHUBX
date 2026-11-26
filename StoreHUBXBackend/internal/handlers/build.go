@@ -149,6 +149,7 @@ func GetBuild(c *fiber.Ctx) error {
 		}
 	}
 
+	withProxyURLs(&job)
 	return utils.Success(c, fiber.Map{"build": job})
 }
 
@@ -187,5 +188,8 @@ func ListBuildsForVersion(c *fiber.Ctx) error {
 		return utils.Error(c, 500, "decode error")
 	}
 
+	for i := range jobs {
+		withProxyURLs(&jobs[i])
+	}
 	return utils.Success(c, fiber.Map{"builds": jobs})
 }

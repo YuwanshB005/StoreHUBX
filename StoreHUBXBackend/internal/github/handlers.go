@@ -25,9 +25,9 @@ import (
 // /components cache is fine and keeps us well under GitHub's rate limits.
 const githubMetaCacheTTL = 10 * time.Minute
 
-// githubRepoCacheKey builds a cache key shared across every user — the
-// underlying GitHub data is public and identical no matter whose token
-// fetched it, only the Authorization header differs per request.
+// githubRepoCacheKey builds a cache key shared across every user. Only
+// responses fetched WITHOUT a user token may be stored under it: a token can
+// see private repos, and this key is read by anonymous endpoints.
 func githubRepoCacheKey(kind, owner, repo string) string {
 	return fmt.Sprintf("cache:github:%s:%s/%s", kind, strings.ToLower(owner), strings.ToLower(repo))
 }
@@ -253,8 +253,12 @@ type RepoInfo struct {
 // owner/repo using token. Exported so internal/handlers' component-link
 // autofill flow (item 40) can reuse the same cached data instead of making
 // a duplicate GitHub call.
+//
+// Only anonymous lookups use the shared cache. A lookup made with a user's
+// token may return a PRIVATE repo's details; caching that under the shared
+// key would serve it to anonymous visitors of GET /github/repo-info.
 func FetchRepoInfo(token, owner, repo string) (*RepoInfo, error) {
-	body, status, err := cachedGitHubFetch(githubRepoCacheKey("repoinfo", owner, repo), githubMetaCacheTTL, func() ([]byte, int, error) {
+	fetch := func() ([]byte, int, error) {
 		endpoint := fmt.Sprintf("https://api.github.com/repos/%s/%s", url.PathEscape(owner), url.PathEscape(repo))
 		raw, status, err := doGitHubGet(token, endpoint)
 		if err != nil || status < 200 || status >= 300 {
@@ -282,7 +286,17 @@ func FetchRepoInfo(token, owner, repo string) (*RepoInfo, error) {
 			DefaultBranch: gh.DefaultBranch,
 		})
 		return out, status, err
-	})
+	}
+	var (
+		body   []byte
+		status int
+		err    error
+	)
+	if token == "" {
+		body, status, err = cachedGitHubFetch(githubRepoCacheKey("repoinfo", owner, repo), githubMetaCacheTTL, fetch)
+	} else {
+		body, status, err = fetch()
+	}
 	if err != nil {
 		return nil, err
 	}

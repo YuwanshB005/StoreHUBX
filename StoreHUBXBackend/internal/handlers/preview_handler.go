@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
@@ -28,25 +29,17 @@ func RedirectPreview(c *fiber.Ctx) error {
 	if err != nil {
 		return utils.Error(c, 404, "component not found")
 	}
-	if comp.Visibility == "private" {
-		uid, _ := c.Locals("user_id").(string)
-		// An iframe src can't carry an Authorization header, so a browser
-		// viewing this URL directly (as version-list.tsx does) never has
-		// OptionalAuth-derived uid set. Allow a short-lived ?token= minted by
-		// GET /api/components/:slug/versions/:version/preview-token as an
-		// alternative proof of identity, scoped to this exact slug/version.
-		// If both a header and a valid token are present, the token wins
-		// (it's the more specific, purpose-built credential for this route);
-		// an invalid/expired/mismatched token is silently ignored so the
-		// request just degrades to whatever the header already established.
-		if token := c.Query("token"); token != "" {
-			if tokenUID, ok := auth.VerifyPreviewToken(token, slug, ver); ok {
-				uid = tokenUID
-			}
+	// A private component needs proof of identity. An iframe can't send an
+	// Authorization header, so the frontend appends a 2-minute preview
+	// token (?token=) minted by GET .../preview-token.
+	uid, _ := c.Locals("user_id").(string)
+	if token := c.Query("token"); token != "" {
+		if tokenUID, ok := auth.VerifyPreviewToken(token, slug, ver); ok {
+			uid = tokenUID
 		}
-		if uid == "" || (uid != comp.OwnerID && !contains(comp.Collaborators, uid)) {
-			return utils.Error(c, 404, "component not found")
-		}
+	}
+	if comp.Visibility == "private" && !canAccess(&comp, uid) {
+		return utils.Error(c, 404, "component not found")
 	}
 
 	jobCol := db.DB().Collection("build_jobs")
@@ -61,7 +54,18 @@ func RedirectPreview(c *fiber.Ctx) error {
 		return utils.Error(c, 404, "preview not available for this version")
 	}
 
-	return c.Redirect(job.Artifacts.BundleURL, fiber.StatusFound) // 302
+	target := bundleProxyURL(job.Artifacts.BundleURL)
+	if comp.Visibility == "private" {
+		// Swap the one-shot preview token for a bundle token that rides in
+		// the path, so the page's relative asset requests are authorised too.
+		bt, err := auth.GenerateBundleToken(uid, slug, ver)
+		if err != nil {
+			return utils.Error(c, 500, "failed to authorise preview")
+		}
+		target = strings.Replace(target, "/bundles/", "/bundles/t/"+bt+"/", 1)
+	}
+	c.Set("Referrer-Policy", "no-referrer")
+	return c.Redirect(target, fiber.StatusFound) // 302
 }
 
 // GET /api/components/:slug/versions/:version/preview-token -> mints a

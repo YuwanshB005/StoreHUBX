@@ -17,6 +17,9 @@ type Config struct {
 	GithubSecret   string
 	GithubRedirect string
 	FrontendURL    string
+	// PublicURL is the API's own externally reachable base URL
+	// (API_PUBLIC_URL), used to build absolute /bundles links.
+	PublicURL string
 	// CORSOrigins is the comma-separated list of browser origins allowed to
 	// call the API (CORS_ALLOW_ORIGINS, default FrontendURL).
 	CORSOrigins string
@@ -38,6 +41,7 @@ func LoadConfig() {
 		GithubSecret:   getEnv("GITHUB_CLIENT_SECRET", ""),
 		GithubRedirect: getEnv("GITHUB_REDIRECT_URL", ""),
 		FrontendURL:    frontend,
+		PublicURL:      strings.TrimRight(getEnv("API_PUBLIC_URL", "http://localhost:"+getEnv("PORT", "8080")), "/"),
 		CORSOrigins:    getEnv("CORS_ALLOW_ORIGINS", frontend),
 	}
 	if err := Validate(AppConfig, os.Getenv("TOKEN_ENC_KEY")); err != nil {

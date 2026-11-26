@@ -22,6 +22,7 @@ import (
 	"github.com/yuwanshb005/storehubx/internal/config"
 	"github.com/yuwanshb005/storehubx/internal/db"
 	"github.com/yuwanshb005/storehubx/internal/server"
+	"github.com/yuwanshb005/storehubx/internal/storage"
 )
 
 var app *fiber.App
@@ -66,6 +67,10 @@ func TestMain(m *testing.M) {
 	cache.Init()
 	if cache.Client != nil {
 		cache.Client.FlushDB(context.Background())
+	}
+	if err := storage.InitBundles(); err != nil {
+		fmt.Println("integration: object storage:", err)
+		os.Exit(1)
 	}
 	app = server.New()
 

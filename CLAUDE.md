@@ -28,7 +28,7 @@ Config comes from `.env` (copy `.env.example`), loaded via `internal/config`. Al
 
 One-off maintenance scripts live under `cmd/` (run with `go run cmd/<name>/main.go`). Both default to a dry run and only write when passed `--apply`:
 - `cmd/normalize_frameworks` — backfills the lowercase/trim/de-dupe of `frameworks`/`tags` that `CreateComponent` now applies on write, so older docs are reachable by the list filter.
-- `cmd/reap_orphans` — deletes `components/{slug}/` prefixes in S3/MinIO whose component no longer exists in Mongo. `DeleteComponent` cannot do this itself; the API process has no S3 client.
+- `cmd/reap_orphans` — deletes `components/{slug}/` prefixes in S3/MinIO whose component no longer exists in Mongo. `DeleteComponent` does not do this itself.
 
 Tests: `make test` (or `cd StoreHUBXBackend && go test -race -p 1 ./...` with the Docker infra running). `internal/integration` drives the real Fiber app (`internal/server.New()`) against real Mongo/Redis/MinIO using its own database (`storehub_test`) and Redis DB 15, so it never touches dev data; it skips when Mongo is unreachable unless `STOREHUBX_REQUIRE_INFRA=1` (set in CI). CI (`.github/workflows/ci.yml`) runs vet + tests for the backend and lint + `tsc` for the frontend on every push.
 
@@ -63,6 +63,8 @@ Components can be linked to a GitHub repo/path/ref (`internal/handlers/component
 Because the API server and worker are separate binaries/processes, any change to `BuildJob` fields or status semantics must stay in sync across `internal/handlers/build.go` and `internal/worker/worker.go`.
 
 Storage is abstracted behind the `storage.Uploader` interface (`internal/storage/storage.go`, implemented by `internal/storage/s3.go` for MinIO/S3) — build output publishing goes through `PublishComponentFromDist`, which also rewrites asset paths so uploaded bundles are served correctly. `publicURL()` honors `CDN_BASE_URL` when set, falling back to `S3_PUBLIC_BASE_URL`.
+
+The bucket is private (no anonymous read/list). Browsers load bundles only through the API proxy in `internal/handlers/bundle_handler.go`: `GET /bundles/components/:slug/:version/*` for public components and `GET /bundles/t/:token/components/:slug/:version/*` for private ones, where the token is a 30-minute bundle JWT (minted by `RedirectPreview` from a 2-minute preview token) carried in the path so relative asset URLs inherit it. Build responses rewrite stored `artifacts.bundleUrl` to the proxy URL (`withProxyURLs`). JWTs carry an audience (`api`, `preview`, `bundle`) and are only accepted where that audience is expected — see `internal/auth/jwt.go`.
 
 `internal/cache` (Redis) fronts `GET /components` and `GET /components/:slug`: the list cache is invalidated via an epoch counter bumped on any component write, the per-slug cache via `invalidateComponentCaches` on likes/ratings/repo-link/visibility changes. Both degrade gracefully to no-cache if Redis is unreachable. Private components (see below) skip the Redis fast-path read/write entirely since serving a cached blob would bypass the per-request authorization check.
 
