@@ -16,13 +16,13 @@ There is no root-level build tool; each service is run independently from its ow
 ### Backend (`StoreHUBXBackend/`)
 
 ```bash
-docker-compose up -d          # start MongoDB, MinIO, Redis, Prometheus, Grafana
+docker-compose up -d          # start MongoDB, MinIO, Redis
 go mod download
-go run cmd/main.go            # API server on :8080 (Swagger at /docs/index.html, metrics at /metrics)
+go run cmd/main.go            # API server on :8080 (Swagger at /docs/index.html)
 go run cmd/worker/main.go     # background build worker (separate process)
 ```
 
-`docker-compose.yml` also starts Redis (cache + build queue), Prometheus (`:9090`), and Grafana (`:3001`, `admin`/`admin`, dashboards auto-provisioned from `grafana/provisioning/`) — see the observability section below.
+`docker-compose.yml` also starts Redis (cache + build queue).
 
 Config comes from `.env` (copy `.env.example`), loaded via `internal/config`. `MONGO_URI` is required — the process calls `log.Fatal` if it's unset. Required GitHub OAuth vars: `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, `GITHUB_REDIRECT_URL`. `REDIS_ADDR` is optional — caching and the fast build-notification path degrade gracefully to no-cache/poll-only when Redis isn't reachable. `CDN_BASE_URL` is optional and overrides `S3_PUBLIC_BASE_URL` for bundle URLs when set.
 
@@ -59,7 +59,6 @@ Components can be linked to a GitHub repo/path/ref (`internal/handlers/component
 2. The separate `cmd/worker/main.go` process (`internal/worker/worker.go`) primarily blocks on `XREADGROUP` against that stream, with a slower (30s) Mongo poll kept as a fallback sweep for retries and any dropped stream messages (falls back to poll-only if Redis isn't configured). It claims a job atomically via `FindOneAndUpdate`, then: downloads the linked GitHub repo as a zip (preferring `Repo.Commit`, then `Ref`), unzips it, runs an npm build (or falls back to serving static files) via `internal/worker/fs_build.go`, rewrites `index.html`/asset paths, and uploads the output to S3/MinIO (`internal/storage`).
 3. Progress is streamed by pushing log lines onto the `BuildJob.logs` array in Mongo as the job runs; status transitions are `BuildQueued -> BuildRunning -> BuildSuccess|BuildError`. A failed job is requeued with exponential backoff (`Attempts`/`MaxAttempts`/`NextAttemptAt`, `10s * 2^attempt` capped at 2m) instead of failing permanently until `MaxAttempts` is hit. On success the corresponding `ComponentVersion` is patched with `previewUrl` and `buildState`.
 4. `GET /builds/:id` and `GET /components/:slug/versions/:version/builds` (both public, no auth) let the frontend poll job status/logs.
-5. Every success/failure and the current queue depth are recorded as Prometheus metrics (`internal/metrics`, scraped at `GET /metrics`) — `storehubx_builds_total{status}`, `storehubx_build_queue_depth`, `storehubx_build_duration_seconds`. A Grafana dashboard for these is auto-provisioned from `StoreHUBXBackend/grafana/provisioning/` (datasource + `build-pipeline.json`) when `docker-compose.yml`'s `grafana` service starts.
 
 Because the API server and worker are separate binaries/processes, any change to `BuildJob` fields or status semantics must stay in sync across `internal/handlers/build.go` and `internal/worker/worker.go`.
 

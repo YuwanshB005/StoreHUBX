@@ -1,6 +1,6 @@
 #!/bin/bash
-# Start the whole project: Docker infra (Mongo, MinIO, Redis, Prometheus,
-# Grafana) + API + worker + frontend. Ctrl+C stops the app processes;
+# Start the whole project: Docker infra (Mongo, MinIO, Redis) + API + worker +
+# frontend. Ctrl+C stops the app processes;
 # run ./kill.sh to also bring down Docker and free every port.
 set -uo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

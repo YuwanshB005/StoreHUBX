@@ -23,7 +23,7 @@ for arg in "$@"; do
 done
 
 APP_PORTS=(8080 3000)                        # API, Next.js
-INFRA_PORTS=(27017 9000 9001 6379 9090 3001) # Mongo, MinIO, Redis, Prometheus, Grafana
+INFRA_PORTS=(27017 9000 9001 6379) # Mongo, MinIO, Redis
 
 # Kill whatever is LISTENing on a port, except Docker's own port proxies.
 free_port() {

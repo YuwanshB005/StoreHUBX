@@ -93,11 +93,6 @@ All API endpoints follow a consistent response format:
   { "status": "ok" }
   ```
 
-#### Prometheus Metrics
-
-- **GET** `/metrics`
-- **Description**: Prometheus exposition format for the build pipeline — `storehubx_builds_total{status}`, `storehubx_build_queue_depth`, `storehubx_build_duration_seconds`. Scraped by the `prometheus` service in `docker-compose.yml`; a Grafana dashboard for these is auto-provisioned (`grafana/provisioning/`, `http://localhost:3001`, `admin`/`admin`).
-
 ### Components
 
 #### Get All Components

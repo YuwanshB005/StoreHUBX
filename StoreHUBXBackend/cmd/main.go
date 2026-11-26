@@ -11,10 +11,8 @@ import (
 	"log"
 
 	"github.com/gofiber/fiber/v2"
-	"github.com/gofiber/fiber/v2/middleware/adaptor"
 	"github.com/gofiber/fiber/v2/middleware/recover"
 	"github.com/gofiber/fiber/v2/middleware/cors"
-	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/yuwanshb005/storehubx/internal/cache"
 	"github.com/yuwanshb005/storehubx/internal/config"
 	"github.com/yuwanshb005/storehubx/internal/db"
@@ -44,7 +42,6 @@ func main() {
 	app.Use(middleware.Logger())
 	app.Use(middleware.RateLimiter())
 	app.Get("/docs/*", swagger.HandlerDefault) // Visit http://localhost:8080/docs/index.html
-	app.Get("/metrics", adaptor.HTTPHandler(promhttp.Handler()))
 
 
 	// 🔹 Register routes

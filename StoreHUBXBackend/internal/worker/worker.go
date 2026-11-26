@@ -12,7 +12,6 @@ import (
 	"github.com/redis/go-redis/v9"
 	"github.com/yuwanshb005/storehubx/internal/cache"
 	"github.com/yuwanshb005/storehubx/internal/db"
-	"github.com/yuwanshb005/storehubx/internal/metrics"
 	"github.com/yuwanshb005/storehubx/internal/models"
 	"github.com/yuwanshb005/storehubx/internal/notify"
 	"github.com/yuwanshb005/storehubx/internal/storage"
@@ -122,7 +121,6 @@ func (p *Processor) heartbeatLoop(ctx context.Context) {
 				CountDocuments(ctx, bson.M{"status": models.BuildQueued})
 			if err == nil {
 				fmt.Printf("[WORKER] Heartbeat: queued=%d\n", count)
-				metrics.BuildQueueDepth.Set(float64(count))
 			}
 		}
 	}
@@ -292,8 +290,6 @@ func (p *Processor) process(ctx context.Context, job *models.BuildJob) {
 		"artifacts": models.BuildArtifact{BundleURL: bundleURL},
 	})
 	p.logPush(ctx, jobID, "build complete")
-	metrics.BuildsTotal.WithLabelValues("success").Inc()
-	metrics.BuildDuration.Observe(time.Since(jobStartTime(job)).Seconds())
 	notify.BuildCompleted(ctx, job.OwnerID, job.ComponentID, job.Component, job.Version, true)
 }
 
@@ -325,17 +321,7 @@ func (p *Processor) fail(ctx context.Context, job *models.BuildJob, err error) {
 	}
 
 	p.setStatus(ctx, job.ID, models.BuildError, bson.M{"attempts": attempts, "endedAt": time.Now()})
-	metrics.BuildsTotal.WithLabelValues("error").Inc()
-	metrics.BuildDuration.Observe(time.Since(jobStartTime(job)).Seconds())
 	notify.BuildCompleted(ctx, job.OwnerID, job.ComponentID, job.Component, job.Version, false)
-}
-
-// jobStartTime returns when this attempt began, for build-duration metrics.
-func jobStartTime(job *models.BuildJob) time.Time {
-	if job.StartedAt != nil {
-		return *job.StartedAt
-	}
-	return job.CreatedAt
 }
 
 func firstNonEmpty(vals ...string) string {
