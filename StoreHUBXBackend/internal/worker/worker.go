@@ -270,6 +270,10 @@ func (p *Processor) process(ctx context.Context, job *models.BuildJob) {
 		p.fail(ctx, job, err)
 		return
 	}
+	if err := checkNoSymlinks(outDir); err != nil {
+		p.fail(ctx, job, err)
+		return
+	}
 
 	p.logPush(ctx, jobID, "[STEP] Modifying index.html...")
 	indexPath := filepath.Join(outDir, "index.html")

@@ -6,19 +6,12 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/yuwanshb005/storehubx/internal/models"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 )
-
-// buildStepTimeout bounds each npm command so a stalled install/build
-// (network hang, stuck postinstall script, etc.) fails the job instead of
-// wedging the worker's single-threaded processing loop forever.
-const buildStepTimeout = 5 * time.Minute
 
 func unzip(srcZip, destDir string) (string, error) {
 	r, err := zip.OpenReader(srcZip)
@@ -31,6 +24,9 @@ func unzip(srcZip, destDir string) (string, error) {
 
 	for _, f := range r.File {
 		fpath := filepath.Join(destDir, f.Name)
+		if !strings.HasPrefix(fpath, filepath.Clean(destDir)+string(os.PathSeparator)) {
+			return "", fmt.Errorf("zip entry escapes extraction dir: %s", f.Name)
+		}
 		// remember the zipball top-level dir (GitHub names it owner-repo-sha/)
 		if topDir == "" {
 			parts := strings.Split(f.Name, "/")
@@ -65,95 +61,22 @@ func unzip(srcZip, destDir string) (string, error) {
 }
 
 func (p *Processor) maybeBuildWithNode(ctx context.Context, jobID primitive.ObjectID, workingDir string) error {
-	// if package.json exists, try a standard build
 	if _, err := os.Stat(filepath.Join(workingDir, "package.json")); err == nil {
-		cmds := [][]string{
-			{"npm", "ci"},
-			{"npm", "run", "build"},
+		logf := func(line string) { p.logPush(ctx, jobID, line) }
+		if err := runNodeBuild(ctx, "storehubx-build-"+jobID.Hex(), workingDir, logf); err != nil {
+			return err
 		}
-		for _, c := range cmds {
-			stepCtx, cancel := context.WithTimeout(ctx, buildStepTimeout)
-			defer cancel()
-
-			cmd := exec.CommandContext(stepCtx, c[0], c[1:]...)
-			cmd.Dir = workingDir
-
-			// Create pipes for capturing stdout and stderr
-			outPipe, _ := cmd.StdoutPipe()
-			errPipe, _ := cmd.StderrPipe()
-
-			// Start the command
-			if err := cmd.Start(); err != nil {
-				return fmt.Errorf("failed to start command %v: %w", c, err)
+		for _, out := range []string{"dist", "build"} {
+			if _, err := os.Stat(filepath.Join(workingDir, out)); err == nil {
+				return nil
 			}
-
-			// Create a channel to signal when the reading is done
-			done := make(chan bool)
-
-			// Capture stdout in a goroutine
-			go func() {
-				buf := make([]byte, 1024)
-				for {
-					n, err := outPipe.Read(buf)
-					if n > 0 {
-						output := string(buf[:n])
-						fmt.Print(output) // Still print to console
-
-						// Now properly log to database
-						p.logPush(ctx, jobID, fmt.Sprintf("[%s] %s", c[0], strings.TrimSpace(output)))
-					}
-					if err != nil {
-						break
-					}
-				}
-				done <- true
-			}()
-
-			// Capture stderr in another goroutine
-			go func() {
-				buf := make([]byte, 1024)
-				for {
-					n, err := errPipe.Read(buf)
-					if n > 0 {
-						output := string(buf[:n])
-						fmt.Print(output) // Still print to console
-
-						// Now properly log to database
-						p.logPush(ctx, jobID, fmt.Sprintf("[%s ERROR] %s", c[0], strings.TrimSpace(output)))
-					}
-					if err != nil {
-						break
-					}
-				}
-				done <- true
-			}()
-
-			// Wait for both stdout and stderr to be fully read
-			<-done
-			<-done
-
-			// Wait for the command to finish
-			if err := cmd.Wait(); err != nil {
-				if stepCtx.Err() == context.DeadlineExceeded {
-					return fmt.Errorf("%v timed out after %s", c, buildStepTimeout)
-				}
-				return fmt.Errorf("node build failed on %v: %w", c, err)
-			}
-		}
-		// prefer dist/ or build/ as output
-		if _, err := os.Stat(filepath.Join(workingDir, "dist")); err == nil {
-			return nil
-		}
-		if _, err := os.Stat(filepath.Join(workingDir, "build")); err == nil {
-			return nil
 		}
 	}
 	// fallback: if there is an index.html, we can ship that folder as-is
 	if _, err := os.Stat(filepath.Join(workingDir, "index.html")); err == nil {
 		return nil
 	}
-	// else: nothing to publish (worker will mark error)
-	return fmt.Errorf("no build output found (need package.json+build or index.html)")
+	return fmt.Errorf("%w: no build output found (need package.json+build or index.html)", errBuildFailed)
 }
 
 func pickOutputDir(workingDir string) (string, error) {
