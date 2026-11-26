@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -20,23 +21,52 @@ import (
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
-// jobTimeout bounds an entire job (download, build, upload) so a stuck
-// network call or hung subprocess can't wedge this single-threaded
-// polling loop forever, blocking every job queued after it.
-const jobTimeout = 10 * time.Minute
+// Delivery model: at-least-once. A job can be started more than once
+// (worker crash, lost lease, redelivered stream message), so every step is
+// safe to repeat and only the attempt holding the current lease may record
+// a result.
+//
+//   - Claim: an atomic FindOneAndUpdate moves queued -> running and stamps
+//     a fresh leaseToken (fencing token) and leaseExpiresAt.
+//   - Heartbeat: while working, the worker extends its lease. If the
+//     renewal matches nothing, the lease was lost and the job is abandoned.
+//   - Reaper: any worker requeues running jobs whose lease expired (their
+//     worker crashed or stalled), counting it as a failed attempt.
+//   - Fencing: every log, status and result write is filtered on
+//     leaseToken, so a stale worker's late writes change nothing. Each
+//     attempt also uploads to its own folder, so it can't overwrite the
+//     files of the attempt that replaced it.
+//   - Retries: transient failures are requeued with exponential backoff
+//     and put in a Redis sorted set (builds:delayed) scored by due time;
+//     a mover pushes them onto the stream when due. Permanent failures
+//     (ErrPermanent) are not retried.
 
-// BuildStreamKey/BuildStreamGroup back the Redis Streams queue that
-// EnqueueBuild pushes onto (internal/handlers/build.go) so a worker is
-// notified immediately instead of only discovering new jobs on the next
-// poll tick.
 const (
+	// BuildStreamKey/buildStreamGroup back the Redis Streams queue that
+	// the API pushes new job ids onto (internal/handlers/build.go).
 	BuildStreamKey   = "builds:stream"
 	buildStreamGroup = "workers"
+	// delayedRetryKey is a sorted set of job ids scored by when their
+	// retry is due (unix milliseconds).
+	delayedRetryKey = "builds:delayed"
+
+	maxBuildBackoff = 2 * time.Minute
 )
+
+// SourceFetcher puts the source to build in a directory under workRoot and
+// returns it. The default downloads the linked GitHub repo; tests replace it.
+type SourceFetcher func(ctx context.Context, job *models.BuildJob, workRoot string) (string, error)
 
 type Processor struct {
 	uploader storage.Uploader
 	tmpDir   string
+
+	// Lease is how long a claim lasts without renewal; HeartbeatEvery is
+	// how often a working job renews it. JobTimeout bounds one attempt.
+	Lease          time.Duration
+	HeartbeatEvery time.Duration
+	JobTimeout     time.Duration
+	FetchSource    SourceFetcher
 }
 
 func NewProcessor(uploader storage.Uploader) *Processor {
@@ -44,27 +74,43 @@ func NewProcessor(uploader storage.Uploader) *Processor {
 	if tmp == "" {
 		tmp = os.TempDir()
 	}
-	return &Processor{uploader: uploader, tmpDir: tmp}
-}
-
-func (p *Processor) logPush(ctx context.Context, id primitive.ObjectID, msg string) {
-	_, _ = db.DB().
-		Collection("build_jobs").
-		UpdateByID(ctx, id, bson.M{"$set": bson.M{"updatedAt": time.Now()}, "$push": bson.M{"logs": msg}})
-}
-
-func (p *Processor) setStatus(ctx context.Context, id primitive.ObjectID, status models.BuildStatus, extra bson.M) {
-	set := bson.M{"status": status, "updatedAt": time.Now()}
-	for k, v := range extra {
-		set[k] = v
+	lease := 60 * time.Second
+	if s, err := strconv.Atoi(os.Getenv("BUILD_LEASE_SECONDS")); err == nil && s > 0 {
+		lease = time.Duration(s) * time.Second
 	}
-	_, _ = db.DB().
-		Collection("build_jobs").
-		UpdateByID(ctx, id, bson.M{"$set": set})
+	p := &Processor{
+		uploader:       uploader,
+		tmpDir:         tmp,
+		Lease:          lease,
+		HeartbeatEvery: lease / 3,
+		JobTimeout:     loadSandboxConfig().Timeout + 5*time.Minute,
+	}
+	p.FetchSource = p.fetchFromGitHub
+	return p
 }
 
-func (p *Processor) claimQueued(ctx context.Context) (*models.BuildJob, error) {
-	var job models.BuildJob
+// fresh returns a short context independent of the job's, for writes that
+// must happen even after the job context was cancelled or timed out (the
+// final status). Writing those with the expired job context used to fail
+// silently and leave jobs "running" forever.
+func fresh() (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.Background(), 10*time.Second)
+}
+
+// fenced is the filter that matches a job only while this attempt still
+// holds its lease.
+func fenced(job *models.BuildJob) bson.M {
+	return bson.M{"_id": job.ID, "leaseToken": job.LeaseToken, "status": models.BuildRunning}
+}
+
+func (p *Processor) logPush(ctx context.Context, job *models.BuildJob, msg string) {
+	_, _ = db.DB().Collection("build_jobs").UpdateOne(ctx, fenced(job),
+		bson.M{"$set": bson.M{"updatedAt": time.Now()}, "$push": bson.M{"logs": msg}})
+}
+
+// claim atomically takes one due queued job (a specific one when id is
+// non-nil) and gives this attempt a new lease.
+func (p *Processor) claim(ctx context.Context, id *primitive.ObjectID) (*models.BuildJob, error) {
 	now := time.Now()
 	filter := bson.M{
 		"status": models.BuildQueued,
@@ -73,29 +119,58 @@ func (p *Processor) claimQueued(ctx context.Context) (*models.BuildJob, error) {
 			{"nextAttemptAt": bson.M{"$lte": now}},
 		},
 	}
-	err := db.DB().
-		Collection("build_jobs").
-		FindOneAndUpdate(ctx,
-			filter,
-			bson.M{"$set": bson.M{"status": models.BuildRunning, "startedAt": now, "updatedAt": now}},
-			options.FindOneAndUpdate().SetReturnDocument(options.After),
-		).Decode(&job)
+	if id != nil {
+		filter["_id"] = *id
+	}
+	expires := now.Add(p.Lease)
+	var job models.BuildJob
+	err := db.DB().Collection("build_jobs").FindOneAndUpdate(ctx, filter,
+		bson.M{"$set": bson.M{
+			"status":         models.BuildRunning,
+			"startedAt":      now,
+			"updatedAt":      now,
+			"leaseToken":     primitive.NewObjectID().Hex(),
+			"leaseExpiresAt": expires,
+		}},
+		options.FindOneAndUpdate().SetReturnDocument(options.After).SetSort(bson.D{{Key: "createdAt", Value: 1}}),
+	).Decode(&job)
 	if err != nil {
 		return nil, err
 	}
 	return &job, nil
 }
 
-// Run drives the worker. When Redis is available, new jobs are picked up
-// immediately via a blocking read on the "builds:stream" Redis Stream
-// (pushed to by EnqueueBuild), with a slower Mongo poll running alongside
-// as a fallback sweep — it catches retries (which become "queued" again
-// without a fresh stream message) and any job whose XADD was dropped.
-// Without Redis, it falls back entirely to the original fast Mongo poll.
+// ClaimNext claims the oldest due job without processing it. Used by tests
+// to simulate a worker that claims a job and then dies.
+func (p *Processor) ClaimNext(ctx context.Context) (*models.BuildJob, error) {
+	return p.claim(ctx, nil)
+}
+
+// ProcessNext claims and fully processes one due job. It reports whether a
+// job was found.
+func (p *Processor) ProcessNext(ctx context.Context) bool {
+	job, err := p.claim(ctx, nil)
+	if err != nil || job == nil {
+		return false
+	}
+	p.process(ctx, job)
+	return true
+}
+
+// Run drives the worker until ctx is cancelled. With Redis, new jobs arrive
+// instantly over the stream and due retries are promoted from the delayed
+// set; a slow Mongo poll is the safety net for anything Redis lost. Without
+// Redis it polls Mongo quickly.
 func (p *Processor) Run(ctx context.Context) {
-	go p.heartbeatLoop(ctx)
+	go p.every(ctx, 30*time.Second, p.queueHeartbeat)
+	go p.every(ctx, p.Lease/2, func(ctx context.Context) {
+		if n, err := p.ReapExpired(ctx); err == nil && n > 0 {
+			fmt.Printf("[WORKER] recovered %d job(s) with expired leases\n", n)
+		}
+	})
 
 	if cache.Client != nil {
+		go p.every(ctx, time.Second, func(ctx context.Context) { _, _ = p.PromoteDueRetries(ctx) })
 		go p.pollLoop(ctx, 30*time.Second)
 		p.streamLoop(ctx)
 		return
@@ -108,58 +183,43 @@ func (p *Processor) Run(ctx context.Context) {
 	p.pollLoop(ctx, time.Duration(pollMs)*time.Millisecond)
 }
 
-func (p *Processor) heartbeatLoop(ctx context.Context) {
-	heartbeatTicker := time.NewTicker(30 * time.Second)
-	defer heartbeatTicker.Stop()
+func (p *Processor) every(ctx context.Context, d time.Duration, fn func(context.Context)) {
+	t := time.NewTicker(d)
+	defer t.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-heartbeatTicker.C:
-			count, err := db.DB().
-				Collection("build_jobs").
-				CountDocuments(ctx, bson.M{"status": models.BuildQueued})
-			if err == nil {
-				fmt.Printf("[WORKER] Heartbeat: queued=%d\n", count)
-			}
+		case <-t.C:
+			fn(ctx)
 		}
+	}
+}
+
+func (p *Processor) queueHeartbeat(ctx context.Context) {
+	count, err := db.DB().Collection("build_jobs").CountDocuments(ctx, bson.M{"status": models.BuildQueued})
+	if err == nil {
+		fmt.Printf("[WORKER] Heartbeat: queued=%d\n", count)
 	}
 }
 
 func (p *Processor) pollLoop(ctx context.Context, interval time.Duration) {
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			if job, err := p.claimQueued(ctx); err == nil && job != nil {
-				jobCtx, cancel := context.WithTimeout(ctx, jobTimeout)
-				p.process(jobCtx, job)
-				cancel()
-			}
+	p.every(ctx, interval, func(ctx context.Context) {
+		for ctx.Err() == nil && p.ProcessNext(ctx) {
 		}
-	}
+	})
 }
 
-// streamLoop blocks on Redis Streams for newly enqueued jobs. Each message
-// only carries a job id — claimSpecific still does the atomic Mongo
-// status flip, so a message that arrives for a job another path (e.g. the
-// fallback sweep) already claimed is simply a no-op ack.
+// streamLoop blocks on Redis Streams for job ids. A message is only a hint:
+// claim still does the atomic Mongo transition, so a message for a job
+// that is already taken is a harmless no-op.
 func (p *Processor) streamLoop(ctx context.Context) {
 	consumer := fmt.Sprintf("worker-%d", os.Getpid())
-
 	if err := cache.Client.XGroupCreateMkStream(ctx, BuildStreamKey, buildStreamGroup, "$").Err(); err != nil &&
 		!strings.Contains(err.Error(), "BUSYGROUP") {
 		fmt.Printf("[WORKER] failed to create stream consumer group: %v\n", err)
 	}
-
-	for {
-		if ctx.Err() != nil {
-			return
-		}
-
+	for ctx.Err() == nil {
 		res, err := cache.Client.XReadGroup(ctx, &redis.XReadGroupArgs{
 			Group:    buildStreamGroup,
 			Consumer: consumer,
@@ -168,12 +228,8 @@ func (p *Processor) streamLoop(ctx context.Context) {
 			Block:    5 * time.Second,
 		}).Result()
 		if err != nil {
-			if ctx.Err() != nil {
-				return
-			}
 			continue // timeout (no new messages) or transient Redis error
 		}
-
 		for _, stream := range res {
 			for _, msg := range stream.Messages {
 				p.handleStreamMessage(ctx, msg)
@@ -183,149 +239,279 @@ func (p *Processor) streamLoop(ctx context.Context) {
 }
 
 func (p *Processor) handleStreamMessage(ctx context.Context, msg redis.XMessage) {
-	defer cache.Client.XAck(ctx, BuildStreamKey, buildStreamGroup, msg.ID)
-
+	defer cache.Client.XAck(context.Background(), BuildStreamKey, buildStreamGroup, msg.ID)
 	jobIDHex, _ := msg.Values["jobId"].(string)
 	oid, err := primitive.ObjectIDFromHex(jobIDHex)
 	if err != nil {
 		return
 	}
-
-	job, err := p.claimSpecific(ctx, oid)
-	if err != nil || job == nil {
-		return
+	if job, err := p.claim(ctx, &oid); err == nil && job != nil {
+		p.process(ctx, job)
 	}
-
-	jobCtx, cancel := context.WithTimeout(ctx, jobTimeout)
-	p.process(jobCtx, job)
-	cancel()
 }
 
-func (p *Processor) claimSpecific(ctx context.Context, id primitive.ObjectID) (*models.BuildJob, error) {
-	var job models.BuildJob
-	now := time.Now()
-	filter := bson.M{
-		"_id":    id,
-		"status": models.BuildQueued,
-		"$or": []bson.M{
-			{"nextAttemptAt": bson.M{"$exists": false}},
-			{"nextAttemptAt": bson.M{"$lte": now}},
-		},
+// PromoteDueRetries moves retries whose backoff has elapsed from the
+// delayed set onto the stream. ZREM decides the winner when several
+// workers race, so each retry is pushed once.
+func (p *Processor) PromoteDueRetries(ctx context.Context) (int, error) {
+	if cache.Client == nil {
+		return 0, nil
 	}
-	err := db.DB().
-		Collection("build_jobs").
-		FindOneAndUpdate(ctx,
-			filter,
-			bson.M{"$set": bson.M{"status": models.BuildRunning, "startedAt": now, "updatedAt": now}},
-			options.FindOneAndUpdate().SetReturnDocument(options.After),
-		).Decode(&job)
+	due, err := cache.Client.ZRangeByScore(ctx, delayedRetryKey, &redis.ZRangeBy{
+		Min: "-inf", Max: strconv.FormatInt(time.Now().UnixMilli(), 10), Count: 100,
+	}).Result()
 	if err != nil {
-		return nil, err
+		return 0, err
 	}
-	return &job, nil
+	moved := 0
+	for _, id := range due {
+		if n, _ := cache.Client.ZRem(ctx, delayedRetryKey, id).Result(); n == 1 {
+			cache.Client.XAdd(ctx, &redis.XAddArgs{Stream: BuildStreamKey, Values: map[string]interface{}{"jobId": id}})
+			moved++
+		}
+	}
+	return moved, nil
 }
 
-func (p *Processor) process(ctx context.Context, job *models.BuildJob) {
-	jobID := job.ID
-	p.logPush(ctx, jobID, "picked by worker")
-	workRoot := filepath.Join(p.tmpDir, "job-"+jobID.Hex())
+// ReapExpired requeues (or fails, when out of attempts) running jobs whose
+// lease has expired. Jobs from before leases existed have no
+// leaseExpiresAt; they are reaped once they have run far longer than any
+// attempt can.
+func (p *Processor) ReapExpired(ctx context.Context) (int, error) {
+	now := time.Now()
+	cur, err := db.DB().Collection("build_jobs").Find(ctx, bson.M{
+		"status": models.BuildRunning,
+		"$or": []bson.M{
+			{"leaseExpiresAt": bson.M{"$lt": now}},
+			{"leaseExpiresAt": bson.M{"$exists": false}, "startedAt": bson.M{"$lt": now.Add(-p.JobTimeout - p.Lease)}},
+		},
+	})
+	if err != nil {
+		return 0, err
+	}
+	var expired []models.BuildJob
+	if err := cur.All(ctx, &expired); err != nil {
+		return 0, err
+	}
+	n := 0
+	for i := range expired {
+		job := &expired[i]
+		filter := bson.M{"_id": job.ID, "status": models.BuildRunning}
+		if job.LeaseToken != "" {
+			filter["leaseToken"] = job.LeaseToken // don't reap a lease renewed meanwhile
+		} else {
+			filter["leaseToken"] = bson.M{"$exists": false}
+		}
+		if p.finishFailure(ctx, job, filter, "lease expired: the worker running this build stopped responding", false) {
+			n++
+		}
+	}
+	return n, nil
+}
+
+// heartbeat renews this attempt's lease until stop is closed. If renewal
+// stops matching (lease lost to the reaper), it cancels the job.
+func (p *Processor) heartbeat(ctx context.Context, job *models.BuildJob, cancel context.CancelFunc, stop <-chan struct{}) {
+	t := time.NewTicker(p.HeartbeatEvery)
+	defer t.Stop()
+	for {
+		select {
+		case <-stop:
+			return
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			c, done := fresh()
+			res, err := db.DB().Collection("build_jobs").UpdateOne(c, fenced(job),
+				bson.M{"$set": bson.M{"leaseExpiresAt": time.Now().Add(p.Lease)}})
+			done()
+			if err == nil && res.MatchedCount == 0 {
+				fmt.Printf("[WORKER] lost lease on job %s, abandoning it\n", job.ID.Hex())
+				cancel()
+				return
+			}
+		}
+	}
+}
+
+func (p *Processor) process(parent context.Context, job *models.BuildJob) {
+	ctx, cancel := context.WithTimeout(parent, p.JobTimeout)
+	defer cancel()
+	stop := make(chan struct{})
+	defer close(stop)
+	go p.heartbeat(ctx, job, cancel, stop)
+
+	if err := p.build(ctx, job); err != nil {
+		if parent.Err() != nil {
+			// The worker is shutting down: hand the job back untouched
+			// instead of burning one of its attempts.
+			p.release(job)
+			return
+		}
+		p.fail(job, err)
+	}
+}
+
+// build runs one attempt and records success. It returns an error for the
+// caller to classify.
+func (p *Processor) build(ctx context.Context, job *models.BuildJob) error {
+	p.logPush(ctx, job, "picked by worker")
+	workRoot := filepath.Join(p.tmpDir, "job-"+job.ID.Hex()+"-"+job.LeaseToken)
 	_ = os.RemoveAll(workRoot)
 	_ = os.MkdirAll(workRoot, 0o755)
-	// Clean up the extracted repo/node_modules/dist regardless of how this
-	// job finishes (success, any failure return, or a panic) so BUILD_TMP_DIR
-	// doesn't grow unbounded across jobs.
 	defer os.RemoveAll(workRoot)
 
-	p.logPush(ctx, jobID, "downloading repository zip...")
-	zipPath, err := downloadRepoZip(ctx, workRoot, job.Repo.Owner, job.Repo.Repo, firstNonEmpty(job.Repo.Commit, job.Repo.Ref, "main"), job.OwnerID)
+	working, err := p.FetchSource(ctx, job, workRoot)
 	if err != nil {
-		p.fail(ctx, job, fmt.Errorf("download failed: %w", err))
-		return
+		return err
 	}
 
-	p.logPush(ctx, jobID, "extracting zip...")
-	topDir, err := unzip(zipPath, workRoot)
-	if err != nil {
-		p.fail(ctx, job, fmt.Errorf("unzip failed: %w", err))
-		return
+	p.logPush(ctx, job, "running build (npm) or static fallback...")
+	logf := func(ctx context.Context, _ primitive.ObjectID, msg string) { p.logPush(ctx, job, msg) }
+	if err := p.maybeBuildWithNode(ctx, job, working); err != nil {
+		return err
 	}
-
-	working := topDir
-	if job.Repo.Path != "" {
-		working = filepath.Join(topDir, job.Repo.Path)
-	}
-	if _, err := os.Stat(working); err != nil {
-		p.fail(ctx, job, fmt.Errorf("invalid path in repo: %s", job.Repo.Path))
-		return
-	}
-
-	p.logPush(ctx, jobID, "running build (npm) or static fallback...")
-	if err := p.maybeBuildWithNode(ctx, jobID, working); err != nil {
-		p.fail(ctx, job, err)
-		return
-	}
-
 	outDir, err := pickOutputDir(working)
 	if err != nil {
-		p.fail(ctx, job, err)
-		return
+		return fmt.Errorf("%w: %v", ErrPermanent, err)
 	}
 	if err := checkNoSymlinks(outDir); err != nil {
-		p.fail(ctx, job, err)
-		return
+		return err
 	}
 
-	p.logPush(ctx, jobID, "[STEP] Modifying index.html...")
 	indexPath := filepath.Join(outDir, "index.html")
-	if err := modifyIndexHTMLOnDisk(ctx, jobID, indexPath, job, p.logPush); err != nil {
-		p.logPush(ctx, jobID, fmt.Sprintf("[WARN] index.html modification skipped: %v", err.Error()))
+	if err := modifyIndexHTMLOnDisk(ctx, job.ID, indexPath, job, logf); err != nil {
+		p.logPush(ctx, job, "[WARN] index.html modification skipped: "+err.Error())
 	}
 
-	p.logPush(ctx, jobID, "[STEP] Uploading files to S3 and rewriting asset paths...")
-	bundleURL, err := p.uploader.PublishComponentFromDist(ctx, job.Component, job.Version, outDir)
+	// Each attempt publishes to its own folder (…/<version>/<leaseToken>/),
+	// so a stale attempt that uploads late can't overwrite the files the
+	// winning attempt recorded.
+	p.logPush(ctx, job, "[STEP] Uploading build output...")
+	bundleURL, err := p.uploader.PublishComponentFromDist(ctx, job.Component, job.Version+"/"+job.LeaseToken, outDir)
 	if err != nil {
-		p.fail(ctx, job, fmt.Errorf("upload failed: %w", err))
-		return
+		return fmt.Errorf("upload failed: %w", err)
 	}
-	p.logPush(ctx, jobID, fmt.Sprintf("[SUCCESS] Files uploaded. Bundle URL: %s", bundleURL))
 
-	p.setStatus(ctx, jobID, models.BuildSuccess, bson.M{
-		"endedAt":   time.Now(),
-		"artifacts": models.BuildArtifact{BundleURL: bundleURL},
+	c, done := fresh()
+	defer done()
+	res, err := db.DB().Collection("build_jobs").UpdateOne(c, fenced(job), bson.M{
+		"$set": bson.M{
+			"status":    models.BuildSuccess,
+			"updatedAt": time.Now(),
+			"endedAt":   time.Now(),
+			"artifacts": models.BuildArtifact{BundleURL: bundleURL},
+		},
+		"$unset": bson.M{"leaseToken": "", "leaseExpiresAt": "", "nextAttemptAt": ""},
+		"$push":  bson.M{"logs": "[SUCCESS] build complete: " + bundleURL},
 	})
-	p.logPush(ctx, jobID, "build complete")
-	notify.BuildCompleted(ctx, job.OwnerID, job.ComponentID, job.Component, job.Version, true)
+	if err != nil {
+		return fmt.Errorf("recording result failed: %w", err)
+	}
+	if res.MatchedCount == 0 {
+		fmt.Printf("[WORKER] job %s: lease lost before completion, result discarded\n", job.ID.Hex())
+		return nil
+	}
+	notify.BuildCompleted(c, job.OwnerID, job.ComponentID, job.Component, job.Version, true)
+	return nil
 }
 
-// maxBuildBackoff caps the wait between retries so a flaky job doesn't
-// end up parked for an unreasonably long time before its next attempt.
-const maxBuildBackoff = 2 * time.Minute
+// fail records a failed attempt of the attempt holding job's lease.
+func (p *Processor) fail(job *models.BuildJob, err error) {
+	c, done := fresh()
+	defer done()
+	p.finishFailure(c, job, fenced(job), err.Error(), errors.Is(err, ErrPermanent))
+}
 
-func (p *Processor) fail(ctx context.Context, job *models.BuildJob, err error) {
-	p.logPush(ctx, job.ID, "ERROR: "+err.Error())
-
+// finishFailure requeues the job with backoff, or marks it failed when it
+// is permanent or out of attempts. filter guards the write (fencing).
+// It reports whether the write applied.
+func (p *Processor) finishFailure(ctx context.Context, job *models.BuildJob, filter bson.M, reason string, permanent bool) bool {
 	maxAttempts := job.MaxAttempts
 	if maxAttempts <= 0 {
 		maxAttempts = 3
 	}
 	attempts := job.Attempts + 1
+	jobsCol := db.DB().Collection("build_jobs")
+	now := time.Now()
 
-	if attempts < maxAttempts {
+	if !permanent && attempts < maxAttempts {
 		backoff := 10 * time.Second * time.Duration(1<<(attempts-1))
 		if backoff > maxBuildBackoff {
 			backoff = maxBuildBackoff
 		}
-		nextAttemptAt := time.Now().Add(backoff)
-		p.logPush(ctx, job.ID, fmt.Sprintf("[RETRY] attempt %d/%d failed, retrying in %s", attempts, maxAttempts, backoff))
-		p.setStatus(ctx, job.ID, models.BuildQueued, bson.M{
-			"attempts":      attempts,
-			"nextAttemptAt": nextAttemptAt,
+		next := now.Add(backoff)
+		res, err := jobsCol.UpdateOne(ctx, filter, bson.M{
+			"$set":   bson.M{"status": models.BuildQueued, "attempts": attempts, "nextAttemptAt": next, "updatedAt": now},
+			"$unset": bson.M{"leaseToken": "", "leaseExpiresAt": ""},
+			"$push": bson.M{"logs": bson.M{"$each": []string{
+				"ERROR: " + reason,
+				fmt.Sprintf("[RETRY] attempt %d/%d failed, retrying in %s", attempts, maxAttempts, backoff),
+			}}},
 		})
-		return
+		if err != nil || res.MatchedCount == 0 {
+			return false
+		}
+		if cache.Client != nil {
+			cache.Client.ZAdd(ctx, delayedRetryKey, redis.Z{Score: float64(next.UnixMilli()), Member: job.ID.Hex()})
+		}
+		return true
 	}
 
-	p.setStatus(ctx, job.ID, models.BuildError, bson.M{"attempts": attempts, "endedAt": time.Now()})
+	final := "ERROR: " + reason
+	if permanent {
+		final += " (not retried: this failure won't change on retry)"
+	}
+	res, err := jobsCol.UpdateOne(ctx, filter, bson.M{
+		"$set":   bson.M{"status": models.BuildError, "attempts": attempts, "endedAt": now, "updatedAt": now},
+		"$unset": bson.M{"leaseToken": "", "leaseExpiresAt": "", "nextAttemptAt": ""},
+		"$push":  bson.M{"logs": final},
+	})
+	if err != nil || res.MatchedCount == 0 {
+		return false
+	}
 	notify.BuildCompleted(ctx, job.OwnerID, job.ComponentID, job.Component, job.Version, false)
+	return true
+}
+
+// release returns a job to the queue without counting an attempt (used on
+// worker shutdown) and nudges the stream so another worker picks it up.
+func (p *Processor) release(job *models.BuildJob) {
+	c, done := fresh()
+	defer done()
+	res, err := db.DB().Collection("build_jobs").UpdateOne(c, fenced(job), bson.M{
+		"$set":   bson.M{"status": models.BuildQueued, "updatedAt": time.Now()},
+		"$unset": bson.M{"leaseToken": "", "leaseExpiresAt": "", "nextAttemptAt": ""},
+		"$push":  bson.M{"logs": "[RELEASED] worker shut down mid-build; job returned to the queue"},
+	})
+	if err == nil && res.MatchedCount == 1 && cache.Client != nil {
+		cache.Client.XAdd(c, &redis.XAddArgs{Stream: BuildStreamKey, Values: map[string]interface{}{"jobId": job.ID.Hex()}})
+	}
+}
+
+// fetchFromGitHub downloads and extracts the linked repo at the job's commit.
+func (p *Processor) fetchFromGitHub(ctx context.Context, job *models.BuildJob, workRoot string) (string, error) {
+	p.logPush(ctx, job, "downloading repository zip...")
+	zipPath, err := downloadRepoZip(ctx, workRoot, job.Repo.Owner, job.Repo.Repo, firstNonEmpty(job.Repo.Commit, job.Repo.Ref, "main"), job.OwnerID)
+	if err != nil {
+		return "", fmt.Errorf("download failed: %w", err)
+	}
+	p.logPush(ctx, job, "extracting zip...")
+	topDir, err := unzip(zipPath, workRoot)
+	if err != nil {
+		return "", fmt.Errorf("unzip failed: %w", err)
+	}
+	working := topDir
+	if job.Repo.Path != "" {
+		working = filepath.Join(topDir, job.Repo.Path)
+		if rel, err := filepath.Rel(topDir, working); err != nil || strings.HasPrefix(rel, "..") {
+			return "", fmt.Errorf("%w: invalid path in repo: %s", ErrPermanent, job.Repo.Path)
+		}
+	}
+	if _, err := os.Stat(working); err != nil {
+		return "", fmt.Errorf("%w: invalid path in repo: %s", ErrPermanent, job.Repo.Path)
+	}
+	return working, nil
 }
 
 func firstNonEmpty(vals ...string) string {

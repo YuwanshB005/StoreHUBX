@@ -51,8 +51,16 @@ func downloadRepoZip(ctx context.Context, destDir, owner, repo, ref, ownerID str
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		b, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("zip download failed: %s | %s", resp.Status, string(b))
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
+		err := fmt.Errorf("zip download failed: %s | %s", resp.Status, string(b))
+		switch resp.StatusCode {
+		case http.StatusNotFound, http.StatusUnauthorized, http.StatusForbidden, http.StatusUnprocessableEntity:
+			// Missing repo/commit or no access: retrying won't help.
+			// (403 can also mean rate limiting, which a later relink or
+			// manual rebuild resolves.)
+			return "", fmt.Errorf("%w: %v", ErrPermanent, err)
+		}
+		return "", err
 	}
 
 	os.MkdirAll(destDir, 0o755)
