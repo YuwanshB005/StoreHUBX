@@ -24,13 +24,13 @@ go run cmd/worker/main.go     # background build worker (separate process)
 
 `docker-compose.yml` also starts Redis (cache + build queue).
 
-Config comes from `.env` (copy `.env.example`), loaded via `internal/config`. `MONGO_URI` is required — the process calls `log.Fatal` if it's unset. Required GitHub OAuth vars: `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, `GITHUB_REDIRECT_URL`. `REDIS_ADDR` is optional — caching and the fast build-notification path degrade gracefully to no-cache/poll-only when Redis isn't reachable. `CDN_BASE_URL` is optional and overrides `S3_PUBLIC_BASE_URL` for bundle URLs when set.
+Config comes from `.env` (copy `.env.example`), loaded via `internal/config`. Always reach MongoDB through `db.DB()` (database name from `MONGO_DB`, default `storehub`), never a hardcoded database name — the API, worker and tests share that one resolver. `MONGO_URI` is required — the process calls `log.Fatal` if it's unset. Required GitHub OAuth vars: `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, `GITHUB_REDIRECT_URL`. `REDIS_ADDR` is optional — caching and the fast build-notification path degrade gracefully to no-cache/poll-only when Redis isn't reachable. `CDN_BASE_URL` is optional and overrides `S3_PUBLIC_BASE_URL` for bundle URLs when set.
 
 One-off maintenance scripts live under `cmd/` (run with `go run cmd/<name>/main.go`). Both default to a dry run and only write when passed `--apply`:
 - `cmd/normalize_frameworks` — backfills the lowercase/trim/de-dupe of `frameworks`/`tags` that `CreateComponent` now applies on write, so older docs are reachable by the list filter.
 - `cmd/reap_orphans` — deletes `components/{slug}/` prefixes in S3/MinIO whose component no longer exists in Mongo. `DeleteComponent` cannot do this itself; the API process has no S3 client.
 
-No test suite currently exists in the backend.
+Tests: `make test` (or `cd StoreHUBXBackend && go test -race -p 1 ./...` with the Docker infra running). `internal/integration` drives the real Fiber app (`internal/server.New()`) against real Mongo/Redis/MinIO using its own database (`storehub_test`) and Redis DB 15, so it never touches dev data; it skips when Mongo is unreachable unless `STOREHUBX_REQUIRE_INFRA=1` (set in CI). CI (`.github/workflows/ci.yml`) runs vet + tests for the backend and lint + `tsc` for the frontend on every push.
 
 ### Frontend (`StoreHUBClient/`)
 

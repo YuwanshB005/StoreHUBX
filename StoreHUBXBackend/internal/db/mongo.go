@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"log"
+	"os"
 	"time"
 
 	"go.mongodb.org/mongo-driver/mongo"
@@ -37,4 +38,19 @@ func Disconnect() {
 		log.Println("Mongo disconnect error:", err)
 	}
 	log.Println("🛑 MongoDB connection closed")
+}
+
+// Name is the MongoDB database every process uses, from MONGO_DB (default
+// "storehub"). The API and the worker both resolve it here so they can never
+// disagree, and tests point it at a throwaway database.
+func Name() string {
+	if n := os.Getenv("MONGO_DB"); n != "" {
+		return n
+	}
+	return "storehub"
+}
+
+// DB returns the application database handle.
+func DB() *mongo.Database {
+	return Client.Database(Name())
 }
