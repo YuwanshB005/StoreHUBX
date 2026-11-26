@@ -7,13 +7,20 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$ROOT_DIR"
 source scripts/lib.sh
 
-# 1. Make sure the Docker daemon is up (launch Docker Desktop on macOS if not).
+# 1. Make sure a Docker daemon is up: Colima, Docker Desktop or OrbStack,
+#    whichever is installed.
 if ! docker info >/dev/null 2>&1; then
-  if [ "$(uname)" = "Darwin" ]; then
+  if command -v colima >/dev/null 2>&1; then
+    log_step "Starting Colima..."
+    colima start || exit 1
+  elif [ -d /Applications/Docker.app ]; then
     log_step "Starting Docker Desktop..."
     open -a Docker
-    for _ in $(seq 1 60); do docker info >/dev/null 2>&1 && break; sleep 2; done
+  elif [ -d /Applications/OrbStack.app ]; then
+    log_step "Starting OrbStack..."
+    open -a OrbStack
   fi
+  for _ in $(seq 1 60); do docker info >/dev/null 2>&1 && break; sleep 2; done
   docker info >/dev/null 2>&1 || { echo "Docker is not running. Start it and retry." >&2; exit 1; }
 fi
 

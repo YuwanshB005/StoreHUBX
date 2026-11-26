@@ -4,7 +4,7 @@
 #
 # Usage: ./kill.sh [--apps-only] [--quit-docker]
 #   --apps-only    only stop api/worker/web processes (leave Docker running)
-#   --quit-docker  also quit Docker Desktop (macOS) after stopping containers
+#   --quit-docker  also stop the Docker runtime (Colima / Docker Desktop / OrbStack)
 set -uo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$ROOT_DIR/scripts/lib.sh"
@@ -52,9 +52,17 @@ else
   log_warn "Docker is not running; nothing to stop."
 fi
 
-if [ "$QUIT_DOCKER" = 1 ] && [ "$(uname)" = "Darwin" ]; then
-  log_step "Quitting Docker Desktop..."
-  osascript -e 'quit app "Docker"' >/dev/null 2>&1 && log_ok "Docker Desktop quit."
+if [ "$QUIT_DOCKER" = 1 ]; then
+  if command -v colima >/dev/null 2>&1 && colima status >/dev/null 2>&1; then
+    log_step "Stopping Colima..."
+    colima stop && log_ok "Colima stopped."
+  elif [ -d /Applications/Docker.app ]; then
+    log_step "Quitting Docker Desktop..."
+    osascript -e 'quit app "Docker"' >/dev/null 2>&1 && log_ok "Docker Desktop quit."
+  elif [ -d /Applications/OrbStack.app ]; then
+    log_step "Quitting OrbStack..."
+    osascript -e 'quit app "OrbStack"' >/dev/null 2>&1 && log_ok "OrbStack quit."
+  fi
 fi
 
 # Report (don't kill) anything else still holding the infra ports, e.g. a
