@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -14,7 +15,6 @@ import (
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
-	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
 // existingVersionForCommit returns the version already created for this exact commit, if any.
@@ -71,11 +71,16 @@ func AddVersion(c *fiber.Ctx) error {
 	version.CodeURL = strings.TrimSpace(version.CodeURL)
 	version.Readme = strings.TrimSpace(version.Readme)
 
-	res, err := verCol.InsertOne(ctx, version)
-	if err != nil {
+	if err := insertVersion(ctx, &version); err != nil {
+		switch {
+		case errors.Is(err, errDupCommit):
+			return utils.Error(c, 409, fmt.Sprintf("version already exists for commit %s", version.CommitSHA[:min(7, len(version.CommitSHA))]))
+		case errors.Is(err, errDupVersion):
+			return utils.Error(c, 409, fmt.Sprintf("version %s already exists", version.Version))
+		}
 		return utils.Error(c, 500, "failed to insert version")
 	}
-	version.ID = res.InsertedID.(primitive.ObjectID)
+	raiseAutoVersion(ctx, comp.ID, version.Version)
 	notify.NewVersion(ctx, comp.ID, comp.Slug, comp.Name, version.Version)
 
 	// Build cache: reuse another version's output if it was already built
@@ -196,28 +201,42 @@ func createVersionAndBuild(ctx context.Context, comp *models.Component, commitSH
 		return nil, primitive.NilObjectID, &deployError{409, fmt.Sprintf("version already exists for this commit: %s", existing.Version)}
 	}
 
-	versionNumber := versionHint
-	if versionNumber == "" {
-		versionNumber = generateNextVersion(ctx, verCol, comp.ID)
+	changelogText := changelog
+	if changelogText == "" {
+		changelogText = fmt.Sprintf("Auto-deployed from commit %s", commitSHA[:min(7, len(commitSHA))])
 	}
-
 	newVersion := models.ComponentVersion{
 		ComponentID: comp.ID,
-		Version:     versionNumber,
-		Changelog:   changelog,
+		Changelog:   changelogText,
 		CommitSHA:   commitSHA,
 		CreatedBy:   actorUID,
 		CreatedAt:   time.Now(),
 	}
-	if newVersion.Changelog == "" {
-		newVersion.Changelog = fmt.Sprintf("Auto-deployed from commit %s", commitSHA[:min(7, len(commitSHA))])
-	}
 
-	insertResult, err := verCol.InsertOne(ctx, newVersion)
-	if err != nil {
-		return nil, primitive.NilObjectID, &deployError{500, "failed to create version"}
+	if versionHint != "" {
+		newVersion.Version = versionHint
+		if err := insertVersion(ctx, &newVersion); err != nil {
+			return nil, primitive.NilObjectID, versionInsertError(err, versionHint)
+		}
+		raiseAutoVersion(ctx, comp.ID, versionHint)
+	} else {
+		// The counter hands out unique numbers, but a number can still be
+		// taken by a manually created version; then take the next one.
+		var err error
+		for attempt := 0; attempt < 20; attempt++ {
+			newVersion.ID = primitive.NilObjectID
+			if newVersion.Version, err = nextAutoVersion(ctx, comp.ID); err != nil {
+				return nil, primitive.NilObjectID, &deployError{500, "failed to assign a version number"}
+			}
+			if err = insertVersion(ctx, &newVersion); !errors.Is(err, errDupVersion) {
+				break
+			}
+		}
+		if err != nil {
+			return nil, primitive.NilObjectID, versionInsertError(err, newVersion.Version)
+		}
 	}
-	newVersion.ID = insertResult.InsertedID.(primitive.ObjectID)
+	versionNumber := newVersion.Version
 	notify.NewVersion(ctx, comp.ID, comp.Slug, comp.Name, versionNumber)
 
 	repo := comp.RepoLink.AsBuildRepo()
@@ -236,23 +255,12 @@ func createVersionAndBuild(ctx context.Context, comp *models.Component, commitSH
 	return &newVersion, jobID, nil
 }
 
-// generateNextVersion picks the next patch version after the component's latest one.
-func generateNextVersion(ctx context.Context, verCol *mongo.Collection, componentID primitive.ObjectID) string {
-	opts := options.Find().SetSort(bson.M{"createdAt": -1}).SetLimit(1)
-	cursor, err := verCol.Find(ctx, bson.M{"componentId": componentID}, opts)
-	if err != nil {
-		return "1.0.0"
+func versionInsertError(err error, version string) *deployError {
+	switch {
+	case errors.Is(err, errDupCommit):
+		return &deployError{409, "version already exists for this commit"}
+	case errors.Is(err, errDupVersion):
+		return &deployError{409, fmt.Sprintf("version %s already exists", version)}
 	}
-	defer cursor.Close(ctx)
-
-	var versions []models.ComponentVersion
-	if err := cursor.All(ctx, &versions); err != nil || len(versions) == 0 {
-		return "1.0.0"
-	}
-
-	var major, minor, patch int
-	if _, err := fmt.Sscanf(versions[0].Version, "%d.%d.%d", &major, &minor, &patch); err != nil {
-		return "1.0.0"
-	}
-	return fmt.Sprintf("%d.%d.%d", major, minor, patch+1)
+	return &deployError{500, "failed to create version"}
 }

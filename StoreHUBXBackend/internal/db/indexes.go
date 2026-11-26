@@ -110,5 +110,13 @@ func EnsureIndexes(client *mongo.Client) error {
 	})
 	check("notifications", err)
 
+	// webhook_deliveries: one row per processed GitHub delivery id (the
+	// _id), expired after 7 days — GitHub only redelivers recent events.
+	_, err = db.Collection("webhook_deliveries").Indexes().CreateOne(ctx, mongo.IndexModel{
+		Keys:    bson.D{{Key: "receivedAt", Value: 1}},
+		Options: options.Index().SetExpireAfterSeconds(7 * 24 * 3600),
+	})
+	check("webhook_deliveries", err)
+
 	return errors.Join(errs...)
 }
