@@ -2,18 +2,22 @@
 # Stop everything the project runs: API, worker, frontend, Docker containers,
 # and free the ports they use.
 #
-# Usage: ./kill.sh [--apps-only] [--quit-docker]
+# By default it also shuts down the Docker runtime (Colima / Docker Desktop /
+# OrbStack).
+#
+# Usage: ./kill.sh [--apps-only] [--keep-docker]
 #   --apps-only    only stop api/worker/web processes (leave Docker running)
-#   --quit-docker  also stop the Docker runtime (Colima / Docker Desktop / OrbStack)
+#   --keep-docker  stop the containers but leave the Docker runtime running
 set -uo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$ROOT_DIR/scripts/lib.sh"
 
-APPS_ONLY=0; QUIT_DOCKER=0
+APPS_ONLY=0; QUIT_DOCKER=1
 for arg in "$@"; do
   case "$arg" in
     --apps-only) APPS_ONLY=1 ;;
-    --quit-docker) QUIT_DOCKER=1 ;;
+    --keep-docker) QUIT_DOCKER=0 ;;
+    --quit-docker) QUIT_DOCKER=1 ;;  # old flag, now the default
     *) echo "Unknown option: $arg" >&2; exit 2 ;;
   esac
 done
